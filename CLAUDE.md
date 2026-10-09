@@ -35,3 +35,4 @@ Dave, UK, on Agile Octopus with an Octopus Home Mini. Infosec analyst, so keep s
 - 1.8: Mac app runs the code from `~/Code/octodave`, so updates need only Quit and reopen. Footer shows the version and where the code came from.
 - 1.9: Billing month (roadmap 2.1 and 2.2): billing day setting (default 15) and a This billing month panel with cost so far vs last month, an end-of-month forecast, a cumulative chart and the workings. Same `computeForecast()` in both apps.
 - 1.9.2: Removed the Billing month period button (it mostly duplicated the This billing month panel). A heading above the history panels says which days they cover.
+- 1.10: Monthly budget (roadmap 2.3) inside This billing month: spent vs budget, even pace, forecast vs budget. Mac saves it via POST /api/prefs into config.json; iPhone in local storage. Same `renderBudget()` in both.

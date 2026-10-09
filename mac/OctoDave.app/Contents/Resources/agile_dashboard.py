@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.9.2"
+VERSION = "1.10"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -526,6 +526,7 @@ class App:
             "account": self.cfg.get("account", ""),
             "device_id": self.cfg.get("device_id", ""),
             "bill_day": int(self.cfg.get("bill_day") or 15),
+            "budget_p": self.cfg.get("budget_p"),
             "region": (self.cfg.get("region") or "").strip("_"),
             "host": self.octo.host if self.octo else None,
             "live_available": bool(self.cfg.get("account") or self.cfg.get("device_id")),
@@ -585,6 +586,8 @@ class App:
         self.keystore.set(key)
         cfg = {"mpan": mpan, "serial": serial, "account": account, "device_id": device, "region": region,
                "bill_day": bill_day}
+        if self.cfg.get("budget_p"):
+            cfg["budget_p"] = self.cfg["budget_p"]
         save_config(cfg)
         with self.lock:
             self.cfg = cfg
@@ -594,6 +597,25 @@ class App:
             self.today_cache = None
             self.ahead_cache = None
             self.current_rate_cache.clear()
+        return self.status()
+
+    def set_prefs(self, body):
+        """Settings that don't need Octopus to check them. For now: the monthly budget in pence."""
+        budget = body.get("budget_p")
+        cfg = dict(self.cfg)
+        if budget is None:
+            cfg.pop("budget_p", None)
+        else:
+            try:
+                budget = int(budget)
+            except (TypeError, ValueError):
+                budget = 0
+            if not 100 <= budget <= 100000:
+                raise ApiError("Enter a budget between £1 and £1,000.", 400)
+            cfg["budget_p"] = budget
+        save_config(cfg)
+        with self.lock:
+            self.cfg = cfg
         return self.status()
 
     def forget(self):
@@ -1132,6 +1154,10 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
             if parsed.path == "/api/setup":
                 return self._json(200, APP.setup(body))
+            if parsed.path == "/api/prefs":
+                if not APP.configured():
+                    return self._json(400, {"error": "Set up your details first."})
+                return self._json(200, APP.set_prefs(body))
             if parsed.path == "/api/forget":
                 return self._json(200, APP.forget())
             if parsed.path == "/api/quit":
@@ -1292,6 +1318,25 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
 
 .period-caption { margin: 4px 0 -4px; font: 620 1.05rem/1.3 var(--font-ui); }
 .period-caption span { color: var(--muted); font-weight: 400; }
+
+/* Budget */
+.budget { display: grid; gap: 8px; padding: 12px 14px; border-radius: 10px; background: var(--surface-2); }
+.budget-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.budget h3 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; margin: 0; }
+.budget .summary { font-variant-numeric: tabular-nums; }
+.budget .summary b { font-family: var(--font-num); }
+.bbar { position: relative; height: 14px; border-radius: 7px; background: color-mix(in srgb, var(--muted) 22%, transparent); margin: 6px 0; }
+.bbar .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 7px; background: var(--accent); }
+.bbar .mark { position: absolute; top: -5px; bottom: -5px; width: 2px; margin-left: -1px; border-radius: 1px; }
+.bbar .mark.pace { background: var(--muted); }
+.bbar .mark.fc { background: var(--peak); width: 3px; }
+.bbar .mark.limit { background: var(--ink); width: 3px; }
+.budget .keys { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 0.8rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.budget .keys i { display: inline-block; width: 3px; height: 11px; margin-right: 6px; vertical-align: -1px; border-radius: 1px; }
+.budget .status { font-weight: 600; }
+.budget .status.over { color: var(--bad); } .budget .status.under { color: var(--good); }
+.budget form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.budget form input { font: inherit; padding: 7px 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); width: 7em; }
 </style>
 </head>
 <body>
@@ -1397,6 +1442,18 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
       <div class="billtiles" id="billTiles"><span class="loading">Working out your billing month…</span></div>
       <div class="legend"><span><i style="background:var(--accent)"></i>This month</span><span><i style="background:var(--peak)"></i>Forecast</span><span><i style="background:var(--muted)"></i>Last month</span></div>
       <div class="chart" id="billChart"></div>
+      <div class="budget" id="budgetBox">
+        <div class="budget-head"><h3>Budget</h3><button type="button" class="btn" id="budgetEdit">Set budget</button></div>
+        <form id="budgetForm" hidden novalidate>
+          <label for="f-budget">Monthly budget £</label>
+          <input id="f-budget" type="number" inputmode="decimal" min="1" max="1000" step="1" placeholder="62">
+          <button type="submit" class="btn primary">Save</button>
+          <button type="button" class="btn" id="budgetCancel">Cancel</button>
+          <button type="button" class="btn danger" id="budgetRemove">Remove budget</button>
+          <span class="muted small" id="budgetError"></span>
+        </form>
+        <div id="budgetBody"></div>
+      </div>
       <details class="workings"><summary>How the forecast is worked out</summary><dl id="billWorkings"></dl></details>
     </section>
 
@@ -1603,7 +1660,9 @@ async function loadBill(refresh) {
   const bill = billDates(billDay());
   try {
     const data = await api("/api/analysis?days=1&compare=0&from=" + ymd(bill.prev) + (refresh ? "&refresh=1" : ""));
-    renderForecast(computeForecast(data, bill), bill);
+    state.forecast = computeForecast(data, bill);
+    renderForecast(state.forecast, bill);
+    renderBudget(state.forecast, state.status.budget_p);
   } catch (e) {
     $("#billTiles").replaceChildren();
     const p = document.createElement("p"); p.className = "muted small"; p.textContent = e.message; $("#billTiles").appendChild(p);
@@ -2065,6 +2124,69 @@ function renderForecast(f, bill) {
     dl.append(dt, dd);
   }
 }
+
+
+// ---------- budget (same in both apps) ----------
+// Spent so far, the even pace for this point in the month, and the forecast, against a monthly budget.
+function renderBudget(f, budgetP) {
+  const body = $("#budgetBody"); body.replaceChildren();
+  $("#budgetEdit").textContent = budgetP ? "Change" : "Set budget";
+  const note = (text) => { const p = document.createElement("p"); p.className = "muted small"; p.textContent = text; body.appendChild(p); };
+  if (!budgetP) { note("No budget set. Set a monthly amount to see how this billing month is tracking against it."); return; }
+  if (!f) { note("Budget " + pounds(budgetP) + ". Waiting for this month's readings."); return; }
+  const pace = budgetP * f.covered / f.totalDays;
+  const scale = Math.max(budgetP, f.projected, f.actual) * 1.04;
+  const pos = (v) => Math.max(0, Math.min(100, (v / scale) * 100)).toFixed(2) + "%";
+  const left = budgetP - f.actual;
+  const sum = document.createElement("p"); sum.className = "summary";
+  sum.innerHTML = "<b></b> spent of <b></b> (<span></span> used) · <span></span>";
+  sum.children[0].textContent = pounds(f.actual); sum.children[1].textContent = pounds(budgetP);
+  sum.children[2].textContent = Math.round((f.actual / budgetP) * 100) + "%";
+  sum.children[3].textContent = left >= 0 ? pounds(left) + " left" : pounds(-left) + " over";
+  body.appendChild(sum);
+  const bar = document.createElement("div"); bar.className = "bbar";
+  bar.setAttribute("role", "img");
+  bar.setAttribute("aria-label", "Spent " + pounds(f.actual) + " of a " + pounds(budgetP) + " budget; forecast " + pounds(f.projected));
+  const part = (cls, v) => { const e = document.createElement("span"); e.className = cls; if (cls === "fill") e.style.width = pos(v); else e.style.left = pos(v); bar.appendChild(e); };
+  part("fill", f.actual); part("mark pace", pace); part("mark fc", f.projected); part("mark limit", budgetP);
+  body.appendChild(bar);
+  const keys = document.createElement("div"); keys.className = "keys";
+  const key = (colour, text) => { const s = document.createElement("span"); s.innerHTML = '<i></i>'; s.firstChild.style.background = colour; s.append(text); keys.appendChild(s); };
+  key("var(--muted)", "Even pace for day " + f.covered + " of " + f.totalDays + ": " + pounds(pace));
+  key("var(--peak)", "Forecast " + pounds(f.projected));
+  key("var(--ink)", "Budget " + pounds(budgetP));
+  body.appendChild(keys);
+  const over = f.projected - budgetP;
+  const st = document.createElement("p"); st.className = "status " + (over > 0 ? "over" : "under");
+  st.textContent = Math.abs(over) < 0.5 ? "Forecast is right on budget" : "Forecast is " + pounds(Math.abs(over)) + (over > 0 ? " over budget" : " under budget");
+  body.appendChild(st);
+}
+
+function wireBudget(getBudget, saveBudget) {
+  const form = $("#budgetForm");
+  const close = () => { show(form, false); $("#budgetError").textContent = ""; };
+  $("#budgetEdit").addEventListener("click", () => {
+    const b = getBudget();
+    $("#f-budget").value = b ? String(Math.round(b / 100)) : "";
+    show($("#budgetRemove"), !!b); show(form, true); $("#f-budget").focus();
+  });
+  $("#budgetCancel").addEventListener("click", close);
+  $("#budgetRemove").addEventListener("click", async () => {
+    try { await saveBudget(null); close(); renderBudget(state.forecast, getBudget()); }
+    catch (e) { $("#budgetError").textContent = e.message; }
+  });
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const v = parseFloat(String($("#f-budget").value).replace(/[£,\s]/g, ""));
+    if (!(v >= 1 && v <= 1000)) { $("#budgetError").textContent = "Enter an amount between £1 and £1,000."; return; }
+    try { await saveBudget(Math.round(v * 100)); close(); renderBudget(state.forecast, getBudget()); }
+    catch (e) { $("#budgetError").textContent = e.message; }
+  });
+}
+
+wireBudget(() => state.status && state.status.budget_p, async (p) => {
+  state.status = await api("/api/prefs", { method: "POST", body: JSON.stringify({ budget_p: p }) });
+});
 
 // ---------- prices ahead (same as the iPhone app) ----------
 const CHEAP_P = 15, AHEAD_EVERY_MS = 15 * 60000;

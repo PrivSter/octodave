@@ -42,7 +42,7 @@ Octo-Aid's method, which is transparent and reasonable:
 - chart: cumulative cost by day for this month (actual, then projected) against last month;
 - an expandable "How this is worked out" section listing the inputs (window used, days, averages, standing charge). Dave values seeing the workings.
 
-### 2.3 Budget
+### 2.3 Budget (done in 1.10)
 - A monthly budget amount per billing month (for example £62), stored on the device.
 - Remaining, % used, days elapsed, and a gauge.
 - Actual vs pace (budget × days elapsed ÷ days in month) vs predicted (from 2.2), with an over/under message.
