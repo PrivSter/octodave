@@ -24,6 +24,8 @@ Reference app: **Octo-Aid** (Dave uses it on his iPhone). Its screens were revie
 
 1.6 **Parity:** "Prices ahead" and the cheapest 1/2/3-hour window exist only on the iPhone. Add them to the Mac app.
 
+1.7 **iPhone: opened in a Safari tab.** A Home Screen web app has its own storage, separate from Safari, so details entered in a Safari tab don't carry over to the icon. When the page isn't running from the Home Screen, show a note above the setup form.
+
 ---
 
 ## 2. Features from Octo-Aid worth adding
@@ -59,10 +61,13 @@ In or next to the Right now panel:
 - today's lowest, highest and spread;
 - the band for the current half-hour.
 
-### 2.6 Day drill-down
+### 2.6 Fill today and yesterday from the Home Mini (done in 1.11)
+Settled readings arrive about a day late, so history fills the half-hours since the last one (up to three days) from Home Mini telemetry, marked as estimates until Octopus's readings replace them.
+
+### 2.7 Day drill-down
 Tap a day in the daily chart to open that day: half-hourly bars coloured by band, kWh, £, average p/kWh and band mix. Include **today** from the Home Mini half-hours that "Today so far" already fetches, labelled as provisional (Home Mini estimate, settled data arrives the next day).
 
-### 2.7 Insights
+### 2.8 Insights
 - **Base load**: the always-on power in W, plus what it costs per month. Suggested method: a low percentile (for example the 10th) of half-hourly kWh over the period × 2 to get kW, priced at the period's average rate.
 - **Typical use window**: the hour with the largest share of usage ("04:30–05:30, 22% of recent usage"). That's a large share for a single early-morning hour. Showing it helps spot something on a timer that could move to a cheaper slot.
 
