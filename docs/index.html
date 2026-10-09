@@ -171,6 +171,7 @@ footer.settings { display: grid; gap: 10px; font-size: 0.82rem; color: var(--mut
   <section class="panel" id="setupPanel" hidden>
     <div class="panel-head"><h2 id="setupTitle">Connect to Octopus</h2></div>
     <p class="muted small">Your details are kept only in this app's storage on this phone, and the key is only ever sent to Octopus Energy. Find the key, MPAN and serial number on your Octopus account under Personal details › API access.</p>
+    <div class="notice" id="tabNote" hidden><b>Add OctoDave to your Home Screen first.</b> You're in a Safari tab, and details saved here stay in Safari: the Home Screen app keeps its own separate storage. Tap Share › Add to Home Screen, open OctoDave from the new icon, and enter your details there.</div>
     <form class="setup" id="setupForm" autocomplete="off" novalidate>
       <div class="field">
         <label for="f-key">API key</label>
@@ -887,8 +888,16 @@ function niceMax(v) {
 }
 
 // ---------- setup ----------
+// iOS gives a Home Screen web app its own storage, separate from Safari's.
+function inSafariTab() {
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const standalone = navigator.standalone === true || (window.matchMedia && matchMedia("(display-mode: standalone)").matches);
+  return ios && !standalone;
+}
+
 function openSetup(editing) {
   const s = App.status();
+  show($("#tabNote"), !editing && inSafariTab());
   $("#setupTitle").textContent = editing ? "Change your details" : "Connect to Octopus";
   $("#f-key").value = "";
   $("#f-key").placeholder = editing && s.key_hint ? "Leave blank to keep " + s.key_hint : "sk_live_…";
