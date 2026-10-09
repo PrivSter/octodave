@@ -1,0 +1,28 @@
+#!/bin/bash
+# OctoDave: starts the local dashboard and opens it in your browser.
+RES="$(cd "$(dirname "$0")/../Resources" && pwd)"
+PORT=8765
+LOGDIR="$HOME/.agile-dashboard"
+LOG="$LOGDIR/app.log"
+mkdir -p "$LOGDIR" && chmod 700 "$LOGDIR"
+
+# Already running? Just show it.
+if /usr/bin/curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/healthz"; then
+  /usr/bin/open "http://127.0.0.1:$PORT/"
+  exit 0
+fi
+
+# Keep the log small.
+if [ -f "$LOG" ] && [ "$(/usr/bin/stat -f%z "$LOG")" -gt 1000000 ]; then : > "$LOG"; fi
+
+PY=""
+for c in /Library/Frameworks/Python.framework/Versions/Current/bin/python3 \
+         /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+  if [ -x "$c" ]; then PY="$c"; break; fi
+done
+if [ -z "$PY" ]; then
+  /usr/bin/osascript -e 'display alert "OctoDave needs Python 3" message "Install Python 3 from python.org, then open OctoDave again." as critical'
+  exit 1
+fi
+
+exec "$PY" "$RES/agile_dashboard.py" --app >> "$LOG" 2>&1

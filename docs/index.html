@@ -1,0 +1,1376 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src https://api.octopus.energy https://api.oegb-kraken.energy; img-src 'self' data: blob:; manifest-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>OctoDave</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="OctoDave">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#eef1f4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0e1319" media="(prefers-color-scheme: dark)">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<style>
+/* Layout: one column of instrument panels for a phone, live reading first, history below. Same tokens as OctoDave for Mac. */
+:root {
+  --bg: #eef1f4; --surface: #ffffff; --surface-2: #f5f7f9; --ink: #15202b; --muted: #5a6777;
+  --line: #d9dfe6; --accent: #2c5a94; --peak: #c96a12; --off: #23807d; --good: #1b7a3e; --bad: #b4441a;
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  --font-num: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1319; --surface: #161d26; --surface-2: #1c2530; --ink: #e6ecf2; --muted: #93a2b2;
+    --line: #29343f; --accent: #7fa8e0; --peak: #f0a14e; --off: #4cb7b2; --good: #5cc287; --bad: #f07f52;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1319; --surface: #161d26; --surface-2: #1c2530; --ink: #e6ecf2; --muted: #93a2b2;
+  --line: #29343f; --accent: #7fa8e0; --peak: #f0a14e; --off: #4cb7b2; --good: #5cc287; --bad: #f07f52;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; background: var(--bg); }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 var(--font-ui);
+  -webkit-tap-highlight-color: transparent; }
+.wrap { max-width: 720px; margin: 0 auto; display: grid; gap: 16px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 calc(32px + env(safe-area-inset-bottom, 0px)); }
+h1, h2, h3 { margin: 0; text-wrap: balance; }
+h1 { font: 650 1.5rem/1.2 var(--font-num); letter-spacing: -0.01em; }
+h2 { font: 620 1.05rem/1.3 var(--font-ui); }
+h3 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+p { margin: 0; }
+.muted { color: var(--muted); }
+.small { font-size: 0.85rem; }
+.num { font-family: var(--font-num); font-variant-numeric: tabular-nums; }
+
+/* Sticky top bar */
+header.top { position: sticky; top: 0; z-index: 5; background: var(--bg);
+  margin-inline: calc(-1 * max(16px, env(safe-area-inset-left, 0px)));
+  padding: calc(10px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) 10px max(16px, env(safe-area-inset-left, 0px));
+  border-bottom: 1px solid var(--line); display: grid; gap: 8px; }
+header.top .row { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; background: var(--surface); }
+.seg button { border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 0.9rem; padding: 7px 12px; cursor: pointer; min-height: 36px; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--surface); }
+button.btn { font: inherit; font-size: 0.92rem; border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+  border-radius: 9px; padding: 7px 12px; cursor: pointer; min-height: 38px; }
+button.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--surface); font-weight: 600; }
+button.btn.danger { color: var(--bad); border-color: var(--bad); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:disabled { opacity: 0.6; cursor: default; }
+
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px; display: grid; gap: 12px; min-width: 0; }
+.panel-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; justify-content: space-between; }
+.notice { padding: 10px 12px; border-radius: 9px; background: var(--surface-2); border: 1px solid var(--line); font-size: 0.9rem; }
+.notice.error { border-color: var(--bad); color: var(--bad); }
+.loading { color: var(--muted); font-style: italic; }
+
+/* Right now */
+.live-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.watts { font: 650 3rem/1 var(--font-num); font-variant-numeric: tabular-nums; }
+.watts small { font-size: 1.05rem; color: var(--muted); font-weight: 500; margin-left: 4px; }
+.facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.fact { background: var(--surface-2); border-radius: 10px; padding: 10px 12px; display: grid; gap: 2px; min-width: 0; }
+.fact .label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.fact .value { font: 650 1.15rem/1.25 var(--font-num); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.fact .sub { font-size: 0.78rem; color: var(--muted); }
+.fact.today .value { color: var(--accent); }
+@media (max-width: 380px) { .facts { grid-template-columns: 1fr 1fr; } .fact.today { grid-column: 1 / -1; } }
+.pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 0.78rem; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; }
+.pill.peak { background: color-mix(in srgb, var(--peak) 18%, transparent); color: var(--peak); }
+.pill.off { background: color-mix(in srgb, var(--off) 18%, transparent); color: var(--off); }
+.pill.cheap { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
+.live-foot { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+
+/* Tiles */
+.tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.tile { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; display: grid; gap: 2px; min-width: 0; }
+.tile .label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.tile .value { font: 650 1.4rem/1.2 var(--font-num); font-variant-numeric: tabular-nums; }
+.tile.peak .value { color: var(--peak); }
+
+/* Charts */
+.chart { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.chart svg { display: block; }
+.chart text { fill: var(--muted); font: 10.5px var(--font-ui); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 0.8rem; color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.readout { min-height: 1.5em; font-size: 0.88rem; font-variant-numeric: tabular-nums; }
+
+/* Cheapest window */
+.best { display: grid; gap: 4px; padding: 12px 14px; border-radius: 10px; background: var(--surface-2); }
+.best .big { font: 650 1.25rem/1.25 var(--font-num); font-variant-numeric: tabular-nums; color: var(--good); }
+
+/* Shift simulator */
+.sim { display: grid; gap: 8px; padding: 12px 14px; border-radius: 10px; background: var(--surface-2); }
+.sim input[type=range] { width: 100%; accent-color: var(--peak); }
+.sim .result { font: 650 1.3rem/1.2 var(--font-num); font-variant-numeric: tabular-nums; color: var(--good); }
+
+table { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
+th, td { text-align: left; padding: 7px 8px 7px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+td.r, th.r { text-align: right; font-variant-numeric: tabular-nums; }
+.table-wrap { overflow-x: auto; }
+
+/* Comparison */
+.cmp { display: grid; gap: 14px; }
+.cmp-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; align-items: center; }
+.cmp-row .name { min-width: 0; }
+.cmp-row .name b { display: block; }
+.cmp-row .name span { display: block; font-size: 0.78rem; color: var(--muted); overflow-wrap: anywhere; }
+.cmp-row .bar-cell { grid-column: 1 / -1; display: grid; gap: 4px; }
+.bar { height: 12px; border-radius: 4px; background: var(--muted); opacity: 0.55; }
+.cmp-row.actual .bar { background: var(--accent); opacity: 1; }
+.cmp-row .amt { text-align: right; font-family: var(--font-num); font-variant-numeric: tabular-nums; }
+.cmp-row .amt small { display: block; font-size: 0.78rem; }
+.delta.up { color: var(--bad); } .delta.down { color: var(--good); }
+
+/* Setup */
+form.setup { display: grid; gap: 14px; }
+.field { display: grid; gap: 4px; }
+.field label { font-weight: 600; font-size: 0.9rem; }
+.field input { font: inherit; font-size: 16px; padding: 10px 12px; border-radius: 9px; border: 1px solid var(--line); background: var(--surface-2); color: var(--ink); width: 100%; }
+.field .hint { font-size: 0.8rem; color: var(--muted); }
+.row-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+footer.settings { display: grid; gap: 10px; font-size: 0.82rem; color: var(--muted); overflow-wrap: anywhere; }
+@media (prefers-reduced-motion: no-preference) { .bar { transition: width 0.3s ease; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="row">
+      <h1>OctoDave</h1>
+      <div class="controls" id="periodControls" hidden>
+        <div class="seg" role="group" aria-label="History period">
+          <button type="button" data-days="7" aria-pressed="false">7d</button>
+          <button type="button" data-days="30" aria-pressed="true">30d</button>
+          <button type="button" data-days="90" aria-pressed="false">90d</button>
+        </div>
+        <button type="button" class="btn" id="refreshBtn" aria-label="Refresh">Refresh</button>
+      </div>
+    </div>
+    <p class="muted small" id="subline">Your Agile Octopus data, straight from Octopus to this phone.</p>
+  </header>
+
+  <section class="panel" id="setupPanel" hidden>
+    <div class="panel-head"><h2 id="setupTitle">Connect to Octopus</h2></div>
+    <p class="muted small">Your details are kept only in this app's storage on this phone, and the key is only ever sent to Octopus Energy. Find the key, MPAN and serial number on your Octopus account under Personal details › API access.</p>
+    <form class="setup" id="setupForm" autocomplete="off" novalidate>
+      <div class="field">
+        <label for="f-key">API key</label>
+        <input id="f-key" name="key" type="password" spellcheck="false" autocapitalize="off" autocorrect="off" placeholder="sk_live_…">
+        <span class="hint" id="keyHint"></span>
+      </div>
+      <div class="field">
+        <label for="f-mpan">Electricity MPAN</label>
+        <input id="f-mpan" name="mpan" inputmode="numeric" spellcheck="false" placeholder="13 digits">
+      </div>
+      <div class="field">
+        <label for="f-serial">Meter serial number</label>
+        <input id="f-serial" name="serial" spellcheck="false" autocapitalize="characters" autocorrect="off">
+      </div>
+      <div class="field">
+        <label for="f-account">Account number <span class="muted">(recommended)</span></label>
+        <input id="f-account" name="account" spellcheck="false" autocapitalize="characters" autocorrect="off" placeholder="A-1234ABCD">
+        <span class="hint">Needed for live Home Mini readings and today's cost, and to price your history at the exact Agile version you were on.</span>
+      </div>
+      <div class="field">
+        <label for="f-device">Home Mini device ID <span class="muted">(optional)</span></label>
+        <input id="f-device" name="device_id" spellcheck="false" autocapitalize="characters" autocorrect="off" placeholder="Found automatically from your account">
+        <span class="hint">Only needed if live readings don't appear. Octo-Aid shows it under Settings › Home Mini Device.</span>
+      </div>
+      <div class="notice error" id="setupError" hidden></div>
+      <div class="row-actions">
+        <button type="submit" class="btn primary" id="setupSave">Check and save</button>
+        <button type="button" class="btn" id="setupCancel" hidden>Cancel</button>
+      </div>
+    </form>
+  </section>
+
+  <div id="dash" hidden style="display:grid; gap:16px;">
+    <section class="panel" aria-labelledby="liveTitle">
+      <div class="panel-head">
+        <h2 id="liveTitle">Right now</h2>
+        <span class="muted small" id="liveAge"></span>
+      </div>
+      <div class="live-top">
+        <div class="watts" id="liveWatts">–<small>W</small></div>
+        <div id="liveBand"></div>
+      </div>
+      <div class="facts">
+        <div class="fact"><span class="label">Price now</span><span class="value" id="factRate">–</span><span class="sub">per kWh</span></div>
+        <div class="fact"><span class="label">Costing</span><span class="value" id="factCost">–</span><span class="sub">an hour</span></div>
+        <div class="fact today"><span class="label">Today so far</span><span class="value" id="factToday">…</span><span class="sub" id="factTodaySub"></span></div>
+      </div>
+      <p class="notice" id="liveNote" hidden></p>
+      <div class="live-foot">
+        <span class="muted small" id="todayAge"></span>
+        <button type="button" class="btn" id="liveToggle" aria-pressed="true">Pause live updates</button>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="aheadTitle">
+      <div class="panel-head">
+        <h2 id="aheadTitle">Prices ahead</h2>
+        <span class="muted small" id="aheadSpan"></span>
+      </div>
+      <div class="chart" id="aheadChart"><span class="loading">Fetching Agile prices…</span></div>
+      <p class="readout muted" id="aheadReadout">Tap a bar to see its price.</p>
+      <div class="best">
+        <div class="row-actions" style="justify-content:space-between">
+          <h3>Cheapest window</h3>
+          <div class="seg" role="group" aria-label="Window length">
+            <button type="button" data-win="2" aria-pressed="false">1h</button>
+            <button type="button" data-win="4" aria-pressed="true">2h</button>
+            <button type="button" data-win="6" aria-pressed="false">3h</button>
+          </div>
+        </div>
+        <p class="big" id="bestWindow">–</p>
+        <p class="muted small" id="bestNote"></p>
+      </div>
+    </section>
+
+    <div class="tiles" id="tiles"></div>
+
+    <section class="panel" aria-labelledby="peakTitle">
+      <div class="panel-head">
+        <h2 id="peakTitle">The 4–7pm peak</h2>
+        <span class="muted small">Agile is dearest 16:00–19:00</span>
+      </div>
+      <div class="legend"><span><i style="background:var(--peak)"></i>4–7pm</span><span><i style="background:var(--off)"></i>Rest of the day</span><span>Energy only</span></div>
+      <div class="chart" id="dailyChart"></div>
+      <p class="readout muted" id="dailyReadout">Tap a day for its figures.</p>
+      <div class="sim">
+        <label for="shift"><b>If you moved <span id="shiftPct" class="num">50%</span> of your 4–7pm use</b> to the cheapest half-hours of the same day</label>
+        <input id="shift" type="range" min="0" max="100" step="5" value="50">
+        <p class="result" id="shiftResult">–</p>
+        <p class="muted small" id="shiftNote"></p>
+      </div>
+      <div>
+        <h3 style="margin-bottom:6px">Most expensive evenings</h3>
+        <div class="table-wrap"><table id="worstTable"></table></div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="heatTitle">
+      <div class="panel-head">
+        <h2 id="heatTitle">When you use electricity</h2>
+        <span class="muted small">Each square is half an hour; darker means more kWh</span>
+      </div>
+      <div class="chart" id="heatmap"></div>
+      <p class="readout muted" id="heatReadout">Tap a square for its reading.</p>
+    </section>
+
+    <section class="panel" aria-labelledby="cmpTitle">
+      <div class="panel-head">
+        <h2 id="cmpTitle">Your usage on other tariffs</h2>
+        <span class="muted small" id="cmpPeriod"></span>
+      </div>
+      <div class="cmp" id="cmp"></div>
+      <p class="muted small">Includes standing charges. Leaves out tariffs that need an EV, heat pump, storage heaters, solar or a battery. Where Octopus hasn't published a price for part of the period, the nearest published price is used and the row says so.</p>
+    </section>
+
+    <div class="notice" id="dashNote" hidden></div>
+    <div class="notice error" id="dashError" hidden></div>
+
+    <footer class="settings">
+      <span id="settingsLine"></span>
+      <span class="row-actions">
+        <button type="button" class="btn" id="csvBtn">Export CSV</button>
+        <button type="button" class="btn" id="editBtn">Change details</button>
+        <button type="button" class="btn danger" id="forgetBtn">Forget my details</button>
+      </span>
+      <span>OctoDave for iPhone 1.6</span>
+    </footer>
+  </div>
+</div>
+
+<script>
+"use strict";
+// ======================================================================
+// OctoDave for iPhone. A browser port of OctoDave for Mac (agile_dashboard.py).
+// Everything runs on the phone: the page calls Octopus directly and keeps
+// your details in this app's local storage. No server, no third parties.
+// ======================================================================
+
+const VERSION = "1.6";
+const API_HOSTS = ["https://api.octopus.energy", "https://api.oegb-kraken.energy"];
+const STORE = "octodave.v1.";
+const DIST_TO_GSP = { "10": "_A", "11": "_B", "12": "_C", "13": "_D", "14": "_E", "15": "_F", "16": "_G",
+  "17": "_P", "18": "_N", "19": "_J", "20": "_H", "21": "_K", "22": "_L", "23": "_M" };
+const ANALYSIS_TTL = 15 * 60 * 1000;
+const LIVE_EVERY_MS = 60000;
+const TODAY_EVERY_MS = 5 * 60000;
+const AHEAD_EVERY_MS = 30 * 60000;
+const PEAK_START = 16, PEAK_END = 19, CHEAP_SLOTS = 6, CHEAP_P = 15;
+
+// ---------- storage (wrapped: private mode or cleared data must not break the app) ----------
+function load(name, fallback) {
+  try { const v = localStorage.getItem(STORE + name); return v ? JSON.parse(v) : fallback; } catch (e) { return fallback; }
+}
+function save(name, value) {
+  try { localStorage.setItem(STORE + name, JSON.stringify(value)); return true; } catch (e) { return false; }
+}
+function drop(name) { try { localStorage.removeItem(STORE + name); } catch (e) { /* nothing to do */ } }
+function dropAll() {
+  try { Object.keys(localStorage).filter((k) => k.startsWith(STORE)).forEach((k) => localStorage.removeItem(k)); } catch (e) { /* ignore */ }
+}
+
+// ---------- time ----------
+function parseTs(s) {
+  s = String(s).trim().replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+  if (!/(Z|[+-]\d{2}:\d{2})$/.test(s)) s += "Z";
+  const ms = Date.parse(s);
+  if (isNaN(ms)) throw new ApiError("Octopus sent a date this app can't read: " + s);
+  return Math.floor(ms / 1000);
+}
+const isoUtc = (epoch) => new Date(epoch * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+const localDate = (epoch) => new Date(epoch * 1000).toLocaleDateString("en-CA");
+function localDayStart(dateStr) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return Math.floor(new Date(y, m - 1, d).getTime() / 1000);
+}
+const nowS = () => Math.floor(Date.now() / 1000);
+
+// ---------- Octopus client ----------
+class ApiError extends Error {
+  constructor(message, status, code) { super(message); this.status = status; this.code = code; }
+}
+
+async function fetchWithTimeout(url, opts, ms) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), ms);
+  try { return await fetch(url, Object.assign({}, opts, { signal: ctl.signal, cache: "no-store", referrerPolicy: "no-referrer" })); }
+  finally { clearTimeout(t); }
+}
+
+class Octopus {
+  constructor(key) { this.key = key; this.host = null; this.token = null; this.tokenExp = 0; }
+
+  async request(pathOrUrl, o) {
+    o = o || {};
+    const auth = o.auth !== false;
+    const absolute = /^https?:/.test(pathOrUrl);
+    const hosts = absolute ? [null] : (this.host ? [this.host] : API_HOSTS);
+    let lastErr = null;
+    for (const host of hosts) {
+      let url = absolute ? pathOrUrl.replace(/^http:/, "https:") : host + pathOrUrl;
+      if (o.params) url += (url.includes("?") ? "&" : "?") + new URLSearchParams(o.params).toString();
+      const headers = Object.assign({ Accept: "application/json" }, o.headers || {});
+      if (auth && this.key) headers.Authorization = "Basic " + btoa(this.key + ":");
+      const opts = { method: o.method || "GET", headers };
+      if (o.body !== undefined) { opts.body = JSON.stringify(o.body); headers["Content-Type"] = "application/json"; }
+      let r;
+      try { r = await fetchWithTimeout(url, opts, 45000); }
+      catch (e) { lastErr = e; continue; }
+      if (host) this.host = host;
+      if (r.ok) return r.json();
+      if (r.status === 401 || r.status === 403)
+        throw new ApiError("Octopus didn't accept the API key (HTTP " + r.status + "). Check it on your Octopus account's API access page.", r.status, "auth");
+      if (r.status === 404)
+        throw new ApiError("Octopus couldn't find that. Check the MPAN, meter serial number and account number.", 404, "not_found");
+      if (r.status === 429)
+        throw new ApiError("Octopus is limiting how often you can ask for data. Wait a few minutes and try again.", 429, "rate_limited");
+      let detail = ""; try { detail = (await r.text()).slice(0, 200); } catch (e) { /* ignore */ }
+      throw new ApiError("Octopus returned an error (HTTP " + r.status + "). " + detail, r.status);
+    }
+    const why = lastErr && lastErr.name === "AbortError" ? "it took too long to answer" : "no connection";
+    throw new ApiError("Couldn't reach Octopus (" + why + "). Check your internet connection.", null, "network");
+  }
+
+  async getAll(path, params) {
+    let data = await this.request(path, { params });
+    const results = (data.results || []).slice();
+    let next = data.next, pages = 1;
+    while (next && pages < 200) {
+      data = await this.request(next);
+      results.push(...(data.results || []));
+      next = data.next; pages++;
+    }
+    return results;
+  }
+
+  async tokenValue() {
+    if (this.token && Date.now() < this.tokenExp) return this.token;
+    const d = await this.graphql("mutation GetToken($key: String!) { obtainKrakenToken(input: {APIKey: $key}) { token } }",
+      { key: this.key }, false);
+    const tok = d.obtainKrakenToken && d.obtainKrakenToken.token;
+    if (!tok) throw new ApiError("Octopus didn't issue a token for live readings.");
+    this.token = tok; this.tokenExp = Date.now() + 50 * 60 * 1000;
+    return tok;
+  }
+
+  async graphql(query, variables, withToken, retried) {
+    if (withToken === undefined) withToken = true;
+    const headers = withToken ? { Authorization: await this.tokenValue() } : {};
+    const data = await this.request("/v1/graphql/", { auth: false, method: "POST", body: { query, variables: variables || {} }, headers });
+    const errors = data.errors || [];
+    if (errors.length) {
+      const codes = errors.map((e) => (e.extensions && e.extensions.errorCode) || "");
+      const text = errors.map((e) => e.message || "").join(" ");
+      if (codes.includes("KT-CT-1199") || codes.includes("KT-CT-1188"))
+        throw new ApiError("Octopus is limiting live readings for now. Live updates are paused; try again later.", 429, "rate_limited");
+      if (withToken && !retried && (codes.includes("KT-CT-1124") || /expired/i.test(text))) {
+        this.token = null;
+        return this.graphql(query, variables, withToken, true);
+      }
+      throw new ApiError("Octopus returned an error for live data: " + (text || codes.join(", ")));
+    }
+    return data.data || {};
+  }
+}
+
+// ---------- rates ----------
+class RateTable {
+  constructor(rows) {
+    const dd = rows.filter((r) => r.payment_method == null || r.payment_method === "DIRECT_DEBIT");
+    rows = dd.length ? dd : rows;
+    const items = [], seen = new Set();
+    for (const r of rows) {
+      if (r.value_inc_vat == null || !r.valid_from) continue;
+      const start = parseTs(r.valid_from);
+      if (seen.has(start)) continue;
+      seen.add(start);
+      items.push([start, r.valid_to ? parseTs(r.valid_to) : Infinity, Number(r.value_inc_vat)]);
+    }
+    items.sort((a, b) => a[0] - b[0]);
+    this.items = items;
+  }
+  get size() { return this.items.length; }
+  index(t) {
+    let lo = 0, hi = this.items.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (this.items[mid][0] <= t) lo = mid + 1; else hi = mid; }
+    return lo - 1;
+  }
+  at(t) { const i = this.index(t); return i >= 0 && t < this.items[i][1] ? this.items[i][2] : null; }
+  nearest(t) { if (!this.items.length) return null; return this.items[Math.max(this.index(t), 0)][2]; }
+}
+
+const tariffToProduct = (code) => code.split("-").slice(2, -1).join("-");
+
+async function fetchRates(octo, code, kind, t0, t1) {
+  const path = "/v1/products/" + tariffToProduct(code) + "/electricity-tariffs/" + code + "/" + kind + "/";
+  let rows = await octo.getAll(path, { period_from: isoUtc(t0), period_to: isoUtc(t1), page_size: 1500 });
+  if (!rows.length) rows = await octo.getAll(path, { page_size: 100 });
+  return new RateTable(rows);
+}
+
+// ---------- tariffs to compare against ----------
+const EXCLUDE = /\b(go|ev|cosy|flux|snug|intelligent|outgoing|export|prepay|business|power ?pack|economy|drive|zero bills?)\b/i;
+const pname = (p) => ((p.full_name || "") + " " + (p.display_name || "")).trim();
+const newest = (c) => c.length ? c.reduce((a, b) => ((b.available_from || "") > (a.available_from || "") ? b : a)) : null;
+
+function pickComparisonProducts(products) {
+  const base = products.filter((p) => (p.direction || "IMPORT").toUpperCase() === "IMPORT" && !p.is_business && !p.is_prepay);
+  const open = base.filter((p) => !p.is_restricted && !EXCLUDE.test(pname(p)));
+  const flexible = newest(open.filter((p) => pname(p).toLowerCase().includes("flexible")));
+  const tracker = newest(open.filter((p) => p.is_tracker || pname(p).toLowerCase().includes("tracker")));
+  const fixedAll = open.filter((p) => !p.is_variable && !p.is_tracker &&
+    (pname(p).toLowerCase().includes("fix") || (p.code || "").toUpperCase().includes("FIX")));
+  const fixed = newest(fixedAll.filter((p) => p.term === 12)) || newest(fixedAll);
+  const picks = [];
+  if (flexible) picks.push(["Flexible Octopus", flexible]);
+  if (tracker) picks.push(["Octopus Tracker", tracker]);
+  if (fixed) picks.push(["12-month fixed", fixed]);
+  const agile = newest(base.filter((p) => (p.code || "").toUpperCase().includes("AGILE") && !(p.code || "").toUpperCase().includes("OUTGOING")));
+  return { picks, agile };
+}
+
+async function regionTariffCode(octo, productCode, region) {
+  const detail = await octo.request("/v1/products/" + productCode + "/");
+  const byRegion = (detail.single_register_electricity_tariffs || {})[region] || {};
+  const t = byRegion.direct_debit_monthly || Object.values(byRegion)[0];
+  if (!t || !t.code) throw new ApiError("No " + productCode + " price is published for region " + region.replace(/_/g, "") + ".");
+  return { code: t.code, name: detail.full_name || detail.display_name || productCode };
+}
+
+// Today's Home Mini half-hours priced at that day's Agile rates. Same logic as price_today() on the Mac.
+function priceToday(rows, units, dayStart) {
+  let kwh = 0, energy = 0, unpriced = 0, prev = null;
+  const useCumulative = rows.some((r) => r[1] != null);
+  for (const [t, cum, delta] of rows) {
+    let wh = null;
+    if (useCumulative) {
+      if (cum == null) continue;
+      if (prev != null && cum >= prev) wh = cum - prev;
+      prev = cum;
+    } else wh = delta;
+    if (wh == null || t < dayStart) continue;
+    const k = wh / 1000, rate = units ? units.at(t) : null;
+    kwh += k;
+    if (rate == null) unpriced += k; else energy += k * rate;
+  }
+  return { kwh, energy, unpriced };
+}
+
+// ---------- the app ----------
+const App = {
+  cfg: load("config", {}),
+  octo: null,
+  products: null,
+  agreementsCache: null,
+  agreementExtended: null,
+  analysisMem: {},
+  liveCache: null, liveAt: 0,
+  rateCache: {},
+
+  init() { if (this.cfg.key) this.octo = new Octopus(this.cfg.key); },
+  configured() { return !!(this.octo && this.cfg.mpan && this.cfg.serial); },
+  status() {
+    const k = this.cfg.key || "";
+    return {
+      configured: this.configured(),
+      key_hint: k.length > 12 ? k.slice(0, 8) + "…" + k.slice(-4) : (k ? "saved" : ""),
+      mpan: this.cfg.mpan || "", serial: this.cfg.serial || "", account: this.cfg.account || "",
+      device_id: this.cfg.device_id || "", region: (this.cfg.region || "").replace(/_/g, ""),
+      live_available: !!(this.cfg.account || this.cfg.device_id),
+    };
+  },
+  clearCaches() {
+    this.analysisMem = {}; this.liveCache = null; this.agreementsCache = null; this.rateCache = {};
+    drop("analysis");
+  },
+
+  async setup(body) {
+    let key = (body.key || "").trim();
+    if (!key && this.cfg.key) key = this.cfg.key;
+    const mpan = (body.mpan || "").replace(/\s/g, "");
+    const serial = (body.serial || "").replace(/\s/g, "").toUpperCase();
+    const account = (body.account || "").replace(/\s/g, "").toUpperCase();
+    const device = (body.device_id || "").trim().toUpperCase();
+    if (!key) throw new ApiError("Enter your API key.", 400);
+    if (!/^sk_live_[A-Za-z0-9]+$/.test(key)) throw new ApiError("That doesn't look like an Octopus API key. It should start with sk_live_.", 400);
+    if (!/^\d{13}$/.test(mpan)) throw new ApiError("The MPAN should be 13 digits.", 400);
+    if (!serial) throw new ApiError("Enter your electricity meter's serial number.", 400);
+    if (account && !/^A-[0-9A-F]{8}$/.test(account)) throw new ApiError("The account number should look like A-1234ABCD.", 400);
+
+    const octo = new Octopus(key);
+    let region = null;
+    try { region = (await octo.request("/v1/electricity-meter-points/" + mpan + "/")).gsp; }
+    catch (e) { if (e.status === 401 || e.status === 403) throw e; }
+    region = region || DIST_TO_GSP[mpan.slice(0, 2)];
+    if (!region) throw new ApiError("Couldn't work out your region from that MPAN.", 400);
+
+    // Proves the key, MPAN and serial work together.
+    await octo.request("/v1/electricity-meter-points/" + mpan + "/meters/" + serial + "/consumption/", { params: { page_size: 1 } });
+
+    if (account) {
+      const acc = await octo.request("/v1/accounts/" + account + "/");
+      const mpans = (acc.properties || []).flatMap((p) => (p.electricity_meter_points || []).map((e) => e.mpan));
+      if (!mpans.includes(mpan)) throw new ApiError("That account number doesn't include this MPAN.", 400);
+    }
+
+    const cfg = { key, mpan, serial, account, device_id: device, region };
+    if (!save("config", cfg)) throw new ApiError("This phone wouldn't let the app save your details. If Safari is in Private mode, switch it off and try again.");
+    this.cfg = cfg; this.octo = octo;
+    this.clearCaches();
+    return this.status();
+  },
+
+  forget() { dropAll(); this.cfg = {}; this.octo = null; this.clearCaches(); this.products = null; return this.status(); },
+
+  async productList() {
+    if (this.products && Date.now() - this.products[0] < 6 * 3600 * 1000) return this.products[1];
+    const rows = await this.octo.getAll("/v1/products/", { brand: "OCTOPUS_ENERGY", page_size: 100 });
+    this.products = [Date.now(), rows];
+    return rows;
+  },
+
+  // Tariff periods for this MPAN: [[code, start, end]], plus whether they came from the account.
+  async agreements() {
+    // One shared request: live, today, prices ahead and history all ask for this at start-up.
+    if (this.agreementsCache && Date.now() - this.agreementsCache.at < 3600 * 1000) return this.agreementsCache.promise;
+    const promise = this._agreements();
+    this.agreementsCache = { at: Date.now(), promise };
+    promise.catch(() => { if (this.agreementsCache && this.agreementsCache.promise === promise) this.agreementsCache = null; });
+    return promise;
+  },
+  async _agreements() {
+    const account = this.cfg.account;
+    if (account) {
+      const acc = await this.octo.request("/v1/accounts/" + account + "/");
+      let out = [];
+      for (const prop of acc.properties || [])
+        for (const emp of prop.electricity_meter_points || []) {
+          if (emp.mpan !== this.cfg.mpan || emp.is_export) continue;
+          for (const a of emp.agreements || []) {
+            if (!a.tariff_code) continue;
+            out.push([a.tariff_code, a.valid_from ? parseTs(a.valid_from) : 0, a.valid_to ? parseTs(a.valid_to) : Infinity]);
+          }
+        }
+      if (out.length) {
+        const seen = new Set();
+        out = out.filter((a) => { const k = a.join("|"); if (seen.has(k)) return false; seen.add(k); return true; })
+          .sort((a, b) => a[1] - b[1]);
+        // Octopus's records can stop at a past end date while you're still on that tariff. Treat the latest as still running.
+        const last = out[out.length - 1];
+        this.agreementExtended = null;
+        if (last[2] !== Infinity && last[2] < nowS()) {
+          this.agreementExtended = [last[0], last[2]];
+          out[out.length - 1] = [last[0], last[1], Infinity];
+        }
+        return { list: out, fromAccount: true };
+      }
+    }
+    const { agile } = pickComparisonProducts(await this.productList());
+    if (!agile) throw new ApiError("Couldn't find the Agile Octopus product. Add your account number so your exact tariff can be read.");
+    const { code } = await regionTariffCode(this.octo, agile.code, this.cfg.region);
+    return { list: [[code, 0, Infinity]], fromAccount: false };
+  },
+
+  async tariffNow() {
+    const { list } = await this.agreements();
+    const now = nowS();
+    let code = list[list.length - 1][0];
+    for (const [c, s, e] of list) if (s <= now && now < e) code = c;
+    return code;
+  },
+
+  async analysis(days, refresh) {
+    days = Math.max(1, Math.min(Number(days) || 30, 366));
+    const mem = this.analysisMem[days];
+    if (mem && !refresh && Date.now() - mem.at < ANALYSIS_TTL) return mem.data;
+    const data = await this.buildAnalysis(days);
+    this.analysisMem[days] = { at: Date.now(), data };
+    save("analysis", { days, at: Date.now(), data });
+    return data;
+  },
+
+  async buildAnalysis(days) {
+    const octo = this.octo, cfg = this.cfg, now = nowS();
+    const start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - days);
+    const tFrom = Math.floor(start.getTime() / 1000);
+    const cons = await octo.getAll("/v1/electricity-meter-points/" + cfg.mpan + "/meters/" + cfg.serial + "/consumption/",
+      { period_from: isoUtc(tFrom), period_to: isoUtc(now), page_size: 25000, order_by: "period" });
+    const readings = new Map();
+    for (const r of cons) {
+      try { const k = Number(r.consumption); if (!isNaN(k)) readings.set(parseTs(r.interval_start), k); } catch (e) { /* skip bad row */ }
+    }
+    if (!readings.size) throw new ApiError("Octopus has no half-hourly readings for this period yet. Smart meter data usually arrives the next day.", 404, "no_data");
+    const times = [...readings.keys()].sort((a, b) => a - b);
+    const t0 = times[0], t1 = times[times.length - 1] + 1800;
+
+    // Your actual tariff(s) over the period.
+    this.agreementsCache = null;
+    const { list: agreements, fromAccount } = await this.agreements();
+    const notes = [];
+    if (fromAccount && this.agreementExtended && t1 > this.agreementExtended[1]) {
+      const [code, ended] = this.agreementExtended;
+      notes.push("Octopus's account records show " + tariffToProduct(code) + " ending on " +
+        new Date(ended * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) +
+        " with nothing after it, so readings since then are priced as if you're still on it.");
+    }
+    const periods = [], history = [];
+    for (const [code, aStart, aEnd] of agreements) {
+      const lo = Math.max(aStart, t0), hi = Math.min(aEnd, t1);
+      if (lo >= hi) continue;
+      periods.push([code, aStart, aEnd,
+        await fetchRates(octo, code, "standard-unit-rates", lo, hi),
+        await fetchRates(octo, code, "standing-charges", lo, hi)]);
+      history.push({ code, from: isoUtc(lo), to: isoUtc(hi) });
+    }
+    if (!periods.length) {
+      const code = agreements.slice().sort((a, b) => a[1] - b[1])[agreements.length - 1][0];
+      periods.push([code, 0, Infinity,
+        await fetchRates(octo, code, "standard-unit-rates", t0, t1),
+        await fetchRates(octo, code, "standing-charges", t0, t1)]);
+      history.push({ code, from: isoUtc(t0), to: isoUtc(t1) });
+      notes.push("The tariff dates on your account didn't line up with your readings, so the whole period is priced at " + code + ".");
+    }
+    const periodFor = (t) => periods.find((p) => p[1] <= t && t < p[2]) || periods[periods.length - 1];
+
+    let missing = 0;
+    const hh = times.map((t) => {
+      const rate = periodFor(t)[3].at(t);
+      if (rate == null) missing++;
+      return [t * 1000, Math.round(readings.get(t) * 1e4) / 1e4, rate == null ? null : Math.round(rate * 1e4) / 1e4];
+    });
+
+    const dates = [...new Set(times.map(localDate))].sort();
+    const standingByDay = {};
+    for (const d of dates) {
+      const ds = localDayStart(d) + 3600; // an hour in, clear of any midnight boundary
+      const st = periodFor(ds)[4];
+      let v = st ? st.at(ds) : null;
+      if (v == null) v = st ? st.nearest(ds) : 0;
+      standingByDay[d] = Math.round((v || 0) * 1e4) / 1e4;
+    }
+    const actualEnergy = hh.reduce((a, [, k, p]) => a + k * (p || 0), 0);
+    const actualStanding = Object.values(standingByDay).reduce((a, b) => a + b, 0);
+
+    const comparisons = [{
+      label: "Your tariff", name: [...new Set(history.map((h) => h.code))].sort().join(", "),
+      energy_p: actualEnergy, standing_p: actualStanding, total_p: actualEnergy + actualStanding,
+      coverage: 1 - missing / hh.length, actual: true,
+    }];
+    const { picks } = pickComparisonProducts(await this.productList());
+    for (const [label, product] of picks) {
+      try {
+        const { code, name } = await regionTariffCode(octo, product.code, cfg.region);
+        const units = await fetchRates(octo, code, "standard-unit-rates", t0, t1);
+        const standing = await fetchRates(octo, code, "standing-charges", t0, t1);
+        let energy = 0, miss = 0;
+        for (const t of times) {
+          let rate = units.at(t);
+          if (rate == null) { miss++; rate = units.nearest(t) || 0; }
+          energy += readings.get(t) * rate;
+        }
+        let st = 0;
+        for (const d of dates) {
+          const ds = localDayStart(d) + 3600;
+          const v = standing.at(ds);
+          st += v != null ? v : (standing.nearest(ds) || 0);
+        }
+        comparisons.push({ label, name, code, energy_p: energy, standing_p: st, total_p: energy + st,
+          coverage: 1 - miss / times.length, actual: false });
+      } catch (e) {
+        comparisons.push({ label, name: pname(product), error: e.message, actual: false });
+      }
+    }
+    return {
+      generated: Date.now(), days, data_from: t0 * 1000, data_to: t1 * 1000,
+      region: cfg.region.replace(/_/g, ""), tariff_history: history, tariff_from_account: fromAccount,
+      missing_prices: missing, notes, hh, standing_by_day: standingByDay, comparisons,
+    };
+  },
+
+  // ---- live ----
+  async deviceIds() {
+    if (this.cfg.device_id) return [this.cfg.device_id];
+    if (!this.cfg.account) throw new ApiError("Add your account number under Change details to see live readings.", 400, "no_account");
+    const q = "query Devices($account: String!) { account(accountNumber: $account) { electricityAgreements(active: true) { meterPoint { meters(includeInactive: true) { smartDevices { deviceId } } } } } }";
+    const d = await this.octo.graphql(q, { account: this.cfg.account });
+    const ids = [];
+    for (const ag of ((d.account || {}).electricityAgreements || []))
+      for (const m of ((ag.meterPoint || {}).meters || []))
+        for (const sd of (m.smartDevices || []))
+          if (sd.deviceId && !ids.includes(sd.deviceId)) ids.push(sd.deviceId);
+    if (!ids.length) throw new ApiError("Octopus didn't list a device for live readings on your account. Tap Change details and enter the device ID Octo-Aid shows under Settings › Home Mini Device (it looks like 00-1C-55-00-00-02-0F-73).", 404, "no_device");
+    return ids;
+  },
+  rememberDevice(dev) {
+    if (!this.cfg.device_id) { this.cfg.device_id = dev; save("config", this.cfg); }
+  },
+
+  async ratesAround(t0, t1) {
+    const code = await this.tariffNow();
+    const key = code + "|" + t0 + "|" + t1;
+    if (this.rateCache[key]) return this.rateCache[key];
+    const table = await fetchRates(this.octo, code, "standard-unit-rates", t0, t1);
+    this.rateCache = { [key]: table };
+    return table;
+  },
+
+  async live() {
+    if (this.liveCache && Date.now() - this.liveAt < 30000) return this.liveCache;
+    const q = "query Live($device: String!) { smartMeterTelemetry(deviceId: $device) { readAt consumption demand } }";
+    let lastError = null, reading = null;
+    for (const dev of await this.deviceIds()) {
+      let rows;
+      try { rows = (await this.octo.graphql(q, { device: dev })).smartMeterTelemetry || []; }
+      catch (e) { if (e.code === "rate_limited") throw e; lastError = e; continue; }
+      if (rows.length) { reading = rows[rows.length - 1]; this.rememberDevice(dev); break; }
+    }
+    if (!reading) throw lastError || new ApiError("No live reading from your Home Mini right now.", 404, "no_reading");
+    const demand = Number(reading.demand || 0);
+    let rate = null;
+    try {
+      const now = nowS(), slot = now - (now % 1800);
+      rate = (await this.ratesAround(slot - 1800, slot + 3600)).at(now);
+    } catch (e) { /* show the reading without a price */ }
+    this.liveCache = { demand_w: demand, read_at: reading.readAt, rate_p: rate,
+      cost_per_hour_p: rate == null ? null : (demand / 1000) * rate, fetched: Date.now() };
+    this.liveAt = Date.now();
+    return this.liveCache;
+  },
+
+  async today() {
+    const now = nowS();
+    const dayStart = localDayStart(localDate(now));
+    const q = "query Today($device: String!, $start: DateTime, $end: DateTime) { smartMeterTelemetry(deviceId: $device, start: $start, end: $end, grouping: HALF_HOURLY) { readAt consumption consumptionDelta } }";
+    let rows = null, lastError = null;
+    for (const dev of await this.deviceIds()) {
+      try { rows = (await this.octo.graphql(q, { device: dev, start: isoUtc(dayStart - 1800), end: isoUtc(now) })).smartMeterTelemetry || []; }
+      catch (e) { if (e.code === "rate_limited") throw e; lastError = e; continue; }
+      if (rows.length) { this.rememberDevice(dev); break; }
+    }
+    if (!rows || !rows.length) throw lastError || new ApiError("Your Home Mini hasn't sent any readings for today yet.", 404, "no_reading");
+    const parsed = rows.filter((r) => r.readAt).map((r) => {
+      let t = parseTs(r.readAt); t -= t % 1800;
+      return [t, r.consumption == null ? null : Number(r.consumption), r.consumptionDelta == null ? null : Number(r.consumptionDelta)];
+    }).sort((a, b) => a[0] - b[0]);
+    const code = await this.tariffNow();
+    const units = await fetchRates(this.octo, code, "standard-unit-rates", dayStart, now + 1800);
+    const standing = await fetchRates(this.octo, code, "standing-charges", dayStart, now + 1);
+    let st = standing.size ? standing.at(dayStart + 3600) : null;
+    if (st == null && standing.size) st = standing.nearest(dayStart + 3600);
+    st = st || 0;
+    const r = priceToday(parsed, units, dayStart);
+    return { kwh: r.kwh, energy_p: r.energy, standing_p: st, total_p: r.energy + st, unpriced_kwh: r.unpriced, fetched: Date.now() };
+  },
+
+  async ahead() {
+    const now = nowS(), slot = now - (now % 1800);
+    const code = await this.tariffNow();
+    const table = await fetchRates(this.octo, code, "standard-unit-rates", slot, slot + 48 * 3600);
+    return { code, slots: table.items.filter((i) => i[0] >= slot).map((i) => [i[0] * 1000, i[2]]) };
+  },
+
+  csv(data) {
+    const lines = ["interval_start_local,kwh,unit_rate_p_per_kwh,cost_p"];
+    const pad = (n) => String(n).padStart(2, "0");
+    for (const [ms, k, p] of data.hh) {
+      const d = new Date(ms);
+      const ts = d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+      lines.push(ts + "," + k + "," + (p == null ? "" : p) + "," + (p == null ? "" : (k * p).toFixed(4)));
+    }
+    return lines.join("\n") + "\n";
+  },
+};
+
+// ======================================================================
+// UI
+// ======================================================================
+const $ = (s) => document.querySelector(s);
+const state = { days: 30, data: null, live: true, liveTimer: null, forgetArmed: false,
+  today: null, todayAt: 0, todayErr: "", ahead: null, aheadAt: 0, win: 4, analysisAt: 0 };
+
+const pounds = (p) => (p < 0 ? "−£" : "£") + Math.abs(p / 100).toFixed(2);
+const pence = (p) => (p == null ? "–" : p.toFixed(1) + "p");
+const kwhFmt = (k) => k.toFixed(k >= 100 ? 0 : 1) + " kWh";
+const dayKey = (d) => d.toLocaleDateString("en-CA");
+const dayLabel = (key) => new Date(key + "T12:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+const hhmm = (d) => d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+const isPeak = (d) => d.getHours() >= PEAK_START && d.getHours() < PEAK_END;
+const svgEl = (tag, attrs) => { const el = document.createElementNS("http://www.w3.org/2000/svg", tag); for (const k in attrs) el.setAttribute(k, attrs[k]); return el; };
+function show(el, on) { el.hidden = !on; }
+function setError(el, msg) { el.textContent = msg || ""; show(el, !!msg); }
+function chartWidth(el) { return Math.max(280, Math.floor(el.clientWidth || el.parentNode.clientWidth || 340)); }
+function niceMax(v) {
+  if (v <= 0) return 1;
+  const pow = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 2, 2.5, 5, 10]) if (m * pow >= v) return m * pow;
+  return 10 * pow;
+}
+
+// ---------- setup ----------
+function openSetup(editing) {
+  const s = App.status();
+  $("#setupTitle").textContent = editing ? "Change your details" : "Connect to Octopus";
+  $("#f-key").value = "";
+  $("#f-key").placeholder = editing && s.key_hint ? "Leave blank to keep " + s.key_hint : "sk_live_…";
+  $("#keyHint").textContent = editing && s.key_hint ? "A key is saved. Enter a new one only if you've regenerated it." : "";
+  $("#f-mpan").value = s.mpan; $("#f-serial").value = s.serial;
+  $("#f-account").value = s.account; $("#f-device").value = s.device_id;
+  show($("#setupCancel"), !!editing);
+  setError($("#setupError"), "");
+  show($("#setupPanel"), true);
+  show($("#dash"), !!editing);
+  $("#setupPanel").scrollIntoView({ block: "start" });
+}
+
+$("#setupForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const btn = $("#setupSave");
+  btn.disabled = true; btn.textContent = "Checking with Octopus…";
+  setError($("#setupError"), "");
+  try {
+    await App.setup({ key: $("#f-key").value, mpan: $("#f-mpan").value, serial: $("#f-serial").value,
+      account: $("#f-account").value, device_id: $("#f-device").value });
+    $("#f-key").value = "";
+    show($("#setupPanel"), false);
+    state.today = null; state.todayAt = 0; state.ahead = null; state.aheadAt = 0;
+    startDashboard(true);
+  } catch (e) {
+    setError($("#setupError"), e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = "Check and save";
+  }
+});
+$("#setupCancel").addEventListener("click", () => show($("#setupPanel"), false));
+$("#editBtn").addEventListener("click", () => openSetup(true));
+$("#forgetBtn").addEventListener("click", () => {
+  const btn = $("#forgetBtn");
+  if (!state.forgetArmed) {
+    state.forgetArmed = true;
+    btn.textContent = "Tap again to delete your key and details from this phone";
+    setTimeout(() => { state.forgetArmed = false; btn.textContent = "Forget my details"; }, 6000);
+    return;
+  }
+  state.forgetArmed = false; btn.textContent = "Forget my details";
+  App.forget();
+  stopLive();
+  show($("#dash"), false); show($("#periodControls"), false);
+  openSetup(false);
+});
+$("#csvBtn").addEventListener("click", async () => {
+  if (!state.data) return;
+  const d = new Date(), pad = (n) => String(n).padStart(2, "0");
+  const name = "agile-usage-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "-" + state.days + "d.csv";
+  const file = new File([App.csv(state.data)], name, { type: "text/csv" });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file] }); return; }
+  } catch (e) { if (e.name === "AbortError") return; }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(file); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+});
+
+// ---------- period ----------
+document.querySelectorAll("#periodControls .seg button").forEach((b) => b.addEventListener("click", () => {
+  state.days = Number(b.dataset.days);
+  document.querySelectorAll("#periodControls .seg button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  save("days", state.days);
+  loadAnalysis(false);
+}));
+$("#refreshBtn").addEventListener("click", () => {
+  loadAnalysis(true);
+  state.todayAt = 0; state.aheadAt = 0; App.liveCache = null;
+  pollLive(); loadAhead(true);
+});
+
+// ---------- analysis ----------
+async function loadAnalysis(refresh) {
+  setError($("#dashError"), "");
+  show($("#dashNote"), false);
+  $("#refreshBtn").disabled = true;
+  if (!state.data || state.data.days !== state.days)
+    $("#tiles").innerHTML = '<div class="tile" style="grid-column:1/-1"><span class="loading">Fetching your half-hourly data from Octopus…</span></div>';
+  try {
+    state.data = await App.analysis(state.days, refresh);
+    state.analysisAt = Date.now();
+    renderAll();
+  } catch (e) {
+    if (!state.data || state.data.days !== state.days) $("#tiles").innerHTML = "";
+    setError($("#dashError"), e.message);
+  } finally {
+    $("#refreshBtn").disabled = false;
+  }
+}
+
+function prepare(data) {
+  const rows = data.hh.map(([ms, k, p]) => { const d = new Date(ms); return { d, k, p, peak: isPeak(d), day: dayKey(d), slot: d.getHours() * 2 + (d.getMinutes() >= 30 ? 1 : 0) }; });
+  const days = new Map();
+  for (const r of rows) {
+    if (!days.has(r.day)) days.set(r.day, { day: r.day, rows: [], kwh: 0, cost: 0, peakKwh: 0, peakCost: 0 });
+    const g = days.get(r.day);
+    g.rows.push(r); g.kwh += r.k;
+    const c = r.p == null ? 0 : r.k * r.p;
+    g.cost += c;
+    if (r.peak) { g.peakKwh += r.k; g.peakCost += c; }
+  }
+  return { rows, days: [...days.values()] };
+}
+
+function renderAll() {
+  const data = state.data;
+  if (!data) return;
+  const prep = prepare(data);
+  state.prep = prep;
+  const totalKwh = prep.rows.reduce((a, r) => a + r.k, 0);
+  const energy = prep.days.reduce((a, g) => a + g.cost, 0);
+  const standing = prep.days.reduce((a, g) => a + (data.standing_by_day[g.day] || 0), 0);
+  const peakCost = prep.days.reduce((a, g) => a + g.peakCost, 0);
+  const peakKwh = prep.days.reduce((a, g) => a + g.peakKwh, 0);
+  const fmtD = (d) => d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  $("#subline").textContent = "Readings " + fmtD(new Date(data.data_from)) + " to " + fmtD(new Date(data.data_to - 1)) +
+    " (" + prep.days.length + " days), region " + data.region + ". History arrives a day late.";
+
+  $("#tiles").innerHTML = "";
+  const tile = (label, value, sub, cls) => {
+    const t = document.createElement("div"); t.className = "tile" + (cls ? " " + cls : "");
+    t.innerHTML = '<span class="label"></span><span class="value"></span><span class="muted small"></span>';
+    t.children[0].textContent = label; t.children[1].textContent = value; t.children[2].textContent = sub;
+    $("#tiles").appendChild(t);
+  };
+  tile("Electricity used", kwhFmt(totalKwh), (totalKwh / prep.days.length).toFixed(1) + " kWh a day");
+  tile("Total cost", pounds(energy + standing), pounds(standing) + " standing charge");
+  tile("Average price", pence(totalKwh ? energy / totalKwh : null), "per kWh, energy only");
+  tile("Spent 4–7pm", pounds(peakCost), Math.round(energy ? (peakCost / energy) * 100 : 0) + "% of cost for " + Math.round(totalKwh ? (peakKwh / totalKwh) * 100 : 0) + "% of use", "peak");
+
+  renderDaily(prep); renderShift(); renderWorst(prep); renderHeatmap(prep); renderComparison(data, prep);
+
+  const s = App.status();
+  $("#settingsLine").textContent = "Key " + (s.key_hint || "saved") + " on this phone · MPAN " + s.mpan +
+    (s.account ? " · " + s.account : "") + (data.tariff_history.length ? " · " + data.tariff_history.map((h) => h.code).join(", ") : "");
+  const notes = (data.notes || []).slice();
+  if (data.missing_prices) notes.push(data.missing_prices + " half-hours had no published price and were left out of costs.");
+  $("#dashNote").textContent = notes.join(" ");
+  show($("#dashNote"), notes.length > 0);
+}
+
+function renderDaily(prep) {
+  const box = $("#dailyChart");
+  const n = prep.days.length;
+  const L = 40, R = 6, T = 8, B = 24, H = 190;
+  const W = Math.max(chartWidth(box), L + R + n * 7);
+  const step = niceMax(Math.max(...prep.days.map((g) => g.cost), 1) / 400) * 100;
+  const max = step * 4;
+  const svg = svgEl("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Daily energy cost split into 4–7pm and the rest of the day" });
+  const y = (p) => T + (H - T - B) * (1 - p / max);
+  for (let i = 0; i <= 4; i++) {
+    const v = (max / 4) * i;
+    svg.appendChild(svgEl("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: "var(--line)", "stroke-width": 1 }));
+    const t = svgEl("text", { x: L - 5, y: y(v) + 4, "text-anchor": "end" });
+    t.textContent = "£" + (v / 100).toFixed(Number.isInteger(step / 100) ? 0 : 2);
+    svg.appendChild(t);
+  }
+  const slot = (W - L - R) / n, bw = Math.max(2, slot * 0.72);
+  const labelEvery = Math.ceil(n / Math.max(3, Math.floor((W - L - R) / 48)));
+  prep.days.forEach((g, i) => {
+    const x = L + i * slot + (slot - bw) / 2;
+    const rest = g.cost - g.peakCost;
+    const grp = svgEl("g", { "data-i": i, style: "cursor:pointer" });
+    grp.appendChild(svgEl("rect", { x: L + i * slot, width: slot, y: T, height: H - T - B, fill: "transparent" }));
+    grp.appendChild(svgEl("rect", { x, width: bw, y: y(rest), height: Math.max(0, y(0) - y(rest)), fill: "var(--off)", rx: 1.5 }));
+    grp.appendChild(svgEl("rect", { x, width: bw, y: y(g.cost), height: Math.max(0, y(rest) - y(g.cost)), fill: "var(--peak)", rx: 1.5 }));
+    svg.appendChild(grp);
+    if (i % labelEvery === 0) {
+      const t = svgEl("text", { x: x + bw / 2, y: H - 7, "text-anchor": "middle" });
+      t.textContent = new Date(g.day + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+      svg.appendChild(t);
+    }
+  });
+  svg.addEventListener("click", (ev) => {
+    const grp = ev.target.closest("g[data-i]");
+    if (!grp) return;
+    const g = prep.days[Number(grp.dataset.i)];
+    $("#dailyReadout").textContent = dayLabel(g.day) + ": " + pounds(g.cost) + " for " + kwhFmt(g.kwh) + ", " + pounds(g.peakCost) + " of it at 4–7pm";
+  });
+  box.replaceChildren(svg);
+}
+
+function shiftSaving(prep, share) {
+  let saved = 0, moved = 0;
+  for (const g of prep.days) {
+    if (g.peakKwh <= 0) continue;
+    const priced = g.rows.filter((r) => !r.peak && r.p != null).map((r) => r.p).sort((a, b) => a - b);
+    if (!priced.length) continue;
+    const cheap = priced.slice(0, CHEAP_SLOTS);
+    const cheapAvg = cheap.reduce((a, b) => a + b, 0) / cheap.length;
+    const peakAvg = g.peakCost / g.peakKwh;
+    const m = g.peakKwh * share;
+    if (peakAvg > cheapAvg) { saved += m * (peakAvg - cheapAvg); moved += m; }
+  }
+  return { saved, moved };
+}
+function renderShift() {
+  if (!state.prep) return;
+  const share = Number($("#shift").value) / 100;
+  $("#shiftPct").textContent = Math.round(share * 100) + "%";
+  const { saved, moved } = shiftSaving(state.prep, share);
+  const days = state.prep.days.length;
+  $("#shiftResult").textContent = pounds(saved) + " saved";
+  $("#shiftNote").textContent = moved.toFixed(1) + " kWh moved over " + days + " days, about " +
+    pounds((saved / days) * 30.4) + " a month. Uses each day's real Agile prices and its " + CHEAP_SLOTS + " cheapest half-hours outside 4–7pm.";
+}
+$("#shift").addEventListener("input", renderShift);
+
+function renderWorst(prep) {
+  const worst = [...prep.days].filter((g) => g.peakKwh > 0).sort((a, b) => b.peakCost - a.peakCost).slice(0, 5);
+  const t = $("#worstTable");
+  t.innerHTML = '<thead><tr><th>Day</th><th class="r">Use</th><th class="r">Cost</th><th class="r">Avg price</th><th class="r">Of day</th></tr></thead>';
+  const tb = document.createElement("tbody");
+  for (const g of worst) {
+    const tr = document.createElement("tr");
+    [dayLabel(g.day), kwhFmt(g.peakKwh), pounds(g.peakCost), pence(g.peakCost / g.peakKwh), (g.cost ? Math.round((g.peakCost / g.cost) * 100) : 0) + "%"]
+      .forEach((c, i) => { const td = document.createElement("td"); td.textContent = c; if (i) td.className = "r"; tr.appendChild(td); });
+    tb.appendChild(tr);
+  }
+  t.appendChild(tb);
+}
+
+function renderHeatmap(prep) {
+  const box = $("#heatmap");
+  const n = prep.days.length;
+  const L = 64, T = 16;
+  const cw = Math.max(5, Math.floor((chartWidth(box) - L - 4) / 48));
+  const ch = n > 45 ? 6 : n > 20 ? 9 : 14;
+  const W = L + 48 * cw + 4, H = T + n * ch + 6;
+  const max = Math.max(...prep.rows.map((r) => r.k), 0.001);
+  const svg = svgEl("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Half-hourly usage by day" });
+  for (let h = 0; h < 24; h += 6) {
+    const t = svgEl("text", { x: L + h * 2 * cw, y: 11 }); t.textContent = String(h).padStart(2, "0") + ":00"; svg.appendChild(t);
+  }
+  const labelEvery = Math.ceil((n * 11) / (n * ch)) || 1;
+  prep.days.forEach((g, i) => {
+    const yy = T + i * ch;
+    if (i % labelEvery === 0) {
+      const t = svgEl("text", { x: L - 5, y: yy + ch - 1, "text-anchor": "end" });
+      t.textContent = new Date(g.day + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+      svg.appendChild(t);
+    }
+    g.rows.forEach((r, j) => {
+      svg.appendChild(svgEl("rect", { x: L + r.slot * cw + 0.5, y: yy + 0.5, width: cw - 1, height: ch - 1, rx: 1,
+        fill: "var(--accent)", "fill-opacity": (0.06 + 0.94 * Math.sqrt(r.k / max)).toFixed(3), "data-d": i, "data-r": j }));
+    });
+  });
+  svg.appendChild(svgEl("rect", { x: L + PEAK_START * 2 * cw - 1, y: T - 2, width: (PEAK_END - PEAK_START) * 2 * cw + 2, height: n * ch + 4,
+    fill: "none", stroke: "var(--peak)", "stroke-width": 1.5, rx: 3, "pointer-events": "none" }));
+  svg.addEventListener("click", (ev) => {
+    const el = ev.target;
+    if (!el.dataset || el.dataset.d == null) return;
+    const g = prep.days[Number(el.dataset.d)], r = g.rows[Number(el.dataset.r)];
+    $("#heatReadout").textContent = dayLabel(g.day) + " " + hhmm(r.d) + ": " + r.k.toFixed(2) + " kWh at " + pence(r.p) + (r.p != null ? " (" + pence(r.k * r.p) + ")" : "");
+  });
+  box.replaceChildren(svg);
+}
+
+function renderComparison(data, prep) {
+  const rows = data.comparisons;
+  const actual = rows.find((r) => r.actual);
+  const valid = rows.filter((r) => r.total_p != null);
+  const max = Math.max(...valid.map((r) => r.total_p), 1);
+  $("#cmpPeriod").textContent = prep.days.length + " days, " + kwhFmt(prep.rows.reduce((a, r) => a + r.k, 0));
+  const box = $("#cmp"); box.replaceChildren();
+  const sorted = [actual, ...valid.filter((r) => !r.actual).sort((a, b) => a.total_p - b.total_p), ...rows.filter((r) => r.error)];
+  for (const r of sorted) {
+    if (!r) continue;
+    const row = document.createElement("div"); row.className = "cmp-row" + (r.actual ? " actual" : "");
+    const name = document.createElement("div"); name.className = "name";
+    const b = document.createElement("b"); b.textContent = r.label; name.appendChild(b);
+    const sp = document.createElement("span"); sp.textContent = r.name || ""; name.appendChild(sp);
+    const amt = document.createElement("div"); amt.className = "amt";
+    const barCell = document.createElement("div"); barCell.className = "bar-cell";
+    if (r.error) {
+      const m = document.createElement("span"); m.className = "muted small"; m.textContent = r.error; barCell.appendChild(m);
+      amt.textContent = "–";
+    } else {
+      const bar = document.createElement("div"); bar.className = "bar"; bar.style.width = ((r.total_p / max) * 100).toFixed(1) + "%";
+      barCell.appendChild(bar);
+      amt.textContent = pounds(r.total_p);
+      const sm = document.createElement("small");
+      if (r.actual) { sm.textContent = "what you paid"; sm.className = "muted"; }
+      else { const d = r.total_p - actual.total_p; sm.textContent = d > 0 ? pounds(d) + " more" : pounds(-d) + " less"; sm.className = "delta " + (d > 0 ? "up" : "down"); }
+      amt.appendChild(sm);
+      if (r.coverage < 0.99) {
+        const nn = document.createElement("span"); nn.className = "muted small";
+        nn.textContent = "Prices published for " + Math.round(r.coverage * 100) + "% of the period; nearest price used for the rest.";
+        barCell.appendChild(nn);
+      }
+    }
+    row.append(name, amt, barCell); box.appendChild(row);
+  }
+}
+
+// ---------- prices ahead ----------
+async function loadAhead(force) {
+  if (!force && state.ahead && Date.now() - state.aheadAt < AHEAD_EVERY_MS) { renderAhead(); return; }
+  try {
+    state.ahead = await App.ahead();
+    state.aheadAt = Date.now();
+    renderAhead();
+  } catch (e) {
+    if (!state.ahead) $("#aheadChart").innerHTML = "";
+    $("#aheadReadout").textContent = e.message;
+  }
+}
+function priceColour(ms, p) {
+  if (p < CHEAP_P) return "var(--good)";
+  return isPeak(new Date(ms)) ? "var(--peak)" : "var(--off)";
+}
+function renderAhead() {
+  const a = state.ahead;
+  if (!a) return;
+  const now = Date.now(), slotStart = now - (now % 1800000);
+  const slots = a.slots.filter((s) => s[0] >= slotStart);
+  const box = $("#aheadChart");
+  if (!slots.length) { box.innerHTML = '<p class="muted small">No prices published beyond now yet. Tomorrow\'s usually appear around 4pm.</p>'; $("#bestWindow").textContent = "–"; return; }
+  const last = new Date(slots[slots.length - 1][0] + 1800000);
+  $("#aheadSpan").textContent = "Published to " + last.toLocaleDateString("en-GB", { weekday: "short" }) + " " + hhmm(last);
+
+  const L = 34, R = 4, T = 8, B = 22, H = 170;
+  const n = slots.length;
+  const W = Math.max(chartWidth(box), L + R + n * 6);
+  const vals = slots.map((s) => s[1]);
+  const vMin = Math.min(0, ...vals), vMax = Math.max(1, ...vals);
+  const tick = niceMax((vMax - vMin) / 4);
+  const lo = Math.floor(vMin / tick) * tick, hiV = Math.ceil(vMax / tick) * tick;
+  const y = (p) => T + (H - T - B) * (1 - (p - lo) / (hiV - lo));
+  const svg = svgEl("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Agile unit prices for the coming half-hours" });
+  const ticks = [];
+  for (let v = lo; v <= hiV + 1e-9; v += tick) ticks.push(v);
+  for (const v of ticks) {
+    svg.appendChild(svgEl("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: "var(--line)", "stroke-width": 1 }));
+    const t = svgEl("text", { x: L - 4, y: y(v) + 4, "text-anchor": "end" }); t.textContent = Math.round(v) + "p"; svg.appendChild(t);
+  }
+  if (lo < 0) svg.appendChild(svgEl("line", { x1: L, x2: W - R, y1: y(0), y2: y(0), stroke: "var(--muted)", "stroke-width": 1 }));
+  const slot = (W - L - R) / n, bw = Math.max(2, slot - 1.5);
+  slots.forEach(([ms, p], i) => {
+    const x = L + i * slot;
+    const grp = svgEl("g", { "data-i": i, style: "cursor:pointer" });
+    grp.appendChild(svgEl("rect", { x, width: slot, y: T, height: H - T - B, fill: "transparent" }));
+    const top = Math.min(y(p), y(0)), h = Math.max(1, Math.abs(y(p) - y(0)));
+    grp.appendChild(svgEl("rect", { x: x + 0.75, width: bw, y: top, height: h, rx: 1, fill: priceColour(ms, p), "fill-opacity": i === 0 ? 1 : 0.85 }));
+    svg.appendChild(grp);
+    const d = new Date(ms);
+    if (d.getMinutes() === 0 && d.getHours() % 6 === 0 && x < W - R - 30) {
+      const t = svgEl("text", { x: x, y: H - 6, "text-anchor": "start" });
+      t.textContent = d.getHours() === 0 ? d.toLocaleDateString("en-GB", { weekday: "short" }) : String(d.getHours()).padStart(2, "0") + ":00";
+      svg.appendChild(t);
+    }
+  });
+  svg.appendChild(svgEl("rect", { x: L + 0.25, y: T - 2, width: slot, height: H - T - B + 2, fill: "none", stroke: "var(--ink)", "stroke-width": 1, rx: 2, "pointer-events": "none" }));
+  svg.addEventListener("click", (ev) => {
+    const grp = ev.target.closest("g[data-i]");
+    if (!grp) return;
+    const [ms, p] = slots[Number(grp.dataset.i)];
+    const d = new Date(ms), e = new Date(ms + 1800000);
+    const sameDay = dayKey(d) === dayKey(new Date());
+    $("#aheadReadout").textContent = (sameDay ? "Today" : d.toLocaleDateString("en-GB", { weekday: "long" })) + " " + hhmm(d) + "–" + hhmm(e) + ": " + pence(p) + "/kWh";
+  });
+  box.replaceChildren(svg);
+  renderBest(slots);
+}
+function renderBest(slots) {
+  const w = state.win;
+  let best = null;
+  for (let i = 0; i + w <= slots.length; i++) {
+    let ok = true, sum = 0;
+    for (let j = 0; j < w; j++) {
+      if (j && slots[i + j][0] - slots[i + j - 1][0] !== 1800000) { ok = false; break; }
+      sum += slots[i + j][1];
+    }
+    if (ok && (!best || sum / w < best.avg)) best = { i, avg: sum / w };
+  }
+  if (!best) { $("#bestWindow").textContent = "Not enough prices published yet"; $("#bestNote").textContent = ""; return; }
+  const s = new Date(slots[best.i][0]), e = new Date(slots[best.i + w - 1][0] + 1800000);
+  const today = dayKey(new Date());
+  const when = dayKey(s) === today ? "today" : dayKey(s) === dayKey(new Date(Date.now() + 86400000)) ? "tomorrow" : s.toLocaleDateString("en-GB", { weekday: "long" });
+  $("#bestWindow").textContent = hhmm(s) + "–" + hhmm(e) + " " + when + ", avg " + pence(best.avg);
+  const lowest = slots.reduce((a, b) => (b[1] < a[1] ? b : a));
+  const ld = new Date(lowest[0]);
+  const ahead = slots[slots.length - 1][0] - Date.now() < 12 * 3600000;
+  $("#bestNote").textContent = "Lowest half-hour: " + hhmm(ld) + (dayKey(ld) === today ? "" : " " + (dayKey(ld) === dayKey(new Date(Date.now() + 86400000)) ? "tomorrow" : "")) + " at " + pence(lowest[1]) + "." +
+    (ahead ? " Tomorrow's prices usually appear around 4pm." : "");
+}
+document.querySelectorAll(".best .seg button").forEach((b) => b.addEventListener("click", () => {
+  state.win = Number(b.dataset.win);
+  document.querySelectorAll(".best .seg button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  save("win", state.win);
+  renderAhead();
+}));
+
+// ---------- live and today so far ----------
+function stopLive() { if (state.liveTimer) clearInterval(state.liveTimer); state.liveTimer = null; }
+function startLive() {
+  stopLive();
+  if (!state.live) return;
+  pollLive();
+  state.liveTimer = setInterval(pollLive, LIVE_EVERY_MS);
+}
+function liveMessage(msg) { $("#liveNote").textContent = msg || ""; show($("#liveNote"), !!msg); }
+
+async function pollLive() {
+  if (document.hidden || !state.live) return;
+  if (!App.status().live_available) {
+    liveMessage("Add your account number under Change details to see live Home Mini readings and today's cost.");
+    $("#factToday").textContent = "–";
+    return;
+  }
+  try {
+    const l = await App.live();
+    liveMessage("");
+    $("#liveWatts").innerHTML = Math.round(l.demand_w).toLocaleString("en-GB") + "<small>W</small>";
+    $("#factRate").textContent = l.rate_p == null ? "not published" : pence(l.rate_p);
+    $("#factCost").textContent = l.cost_per_hour_p == null ? "–" : pence(l.cost_per_hour_p);
+    const pill = document.createElement("span");
+    if (isPeak(new Date())) { pill.className = "pill peak"; pill.textContent = "4–7pm peak"; }
+    else if (l.rate_p != null && l.rate_p < CHEAP_P) { pill.className = "pill cheap"; pill.textContent = "Cheap slot"; }
+    else { pill.className = "pill off"; pill.textContent = "Off-peak"; }
+    $("#liveBand").replaceChildren(pill);
+    if (l.read_at) {
+      const age = Math.max(0, Math.round((Date.now() - new Date(l.read_at).getTime()) / 1000));
+      $("#liveAge").textContent = "Reading from " + (age < 90 ? age + "s" : Math.round(age / 60) + " min") + " ago";
+    }
+    refreshToday();
+  } catch (e) {
+    if (e.status === 429 || e.code === "rate_limited") { state.live = false; stopLive(); updateLiveToggle(); }
+    liveMessage(e.message);
+  }
+}
+
+async function refreshToday(force) {
+  if (!force && Date.now() - state.todayAt < TODAY_EVERY_MS) return;
+  state.todayAt = Date.now();
+  try { state.today = await App.today(); state.todayErr = ""; }
+  catch (e) { state.todayErr = e.message; }
+  renderToday();
+}
+function renderToday() {
+  const t = state.today;
+  if (t) {
+    $("#factToday").textContent = pounds(t.total_p);
+    let sub = t.kwh.toFixed(1) + " kWh + " + pence(t.standing_p) + " standing";
+    if (t.unpriced_kwh > 0.05) sub += "; " + t.unpriced_kwh.toFixed(1) + " kWh not yet priced";
+    $("#factTodaySub").textContent = sub;
+    $("#todayAge").textContent = "Today's cost updated " + hhmm(new Date(t.fetched)) + (state.todayErr ? " (latest update failed)" : "");
+  } else {
+    $("#factToday").textContent = state.todayErr ? "unavailable" : "…";
+    $("#factTodaySub").textContent = "";
+    $("#todayAge").textContent = state.todayErr || "";
+  }
+}
+
+function updateLiveToggle() {
+  const b = $("#liveToggle");
+  b.setAttribute("aria-pressed", String(state.live));
+  b.textContent = state.live ? "Pause live updates" : "Resume live updates";
+}
+$("#liveToggle").addEventListener("click", () => { state.live = !state.live; updateLiveToggle(); state.live ? startLive() : stopLive(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden || !App.configured()) return;
+  if (state.live) pollLive();
+  loadAhead(false);
+  if (Date.now() - state.analysisAt > ANALYSIS_TTL) loadAnalysis(false);
+});
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { if (state.prep) { renderDaily(state.prep); renderHeatmap(state.prep); } renderAhead(); }, 200);
+});
+
+// ---------- start ----------
+function startDashboard(fresh) {
+  show($("#dash"), true); show($("#periodControls"), true);
+  window.scrollTo(0, 0);
+  updateLiveToggle();
+  // Show the last analysis straight away while a fresh one loads.
+  const cached = load("analysis", null);
+  if (!fresh && cached && cached.days === state.days && cached.data) {
+    state.data = cached.data;
+    App.analysisMem[state.days] = { at: cached.at, data: cached.data };
+    renderAll();
+  }
+  loadAnalysis(!!fresh);
+  loadAhead(true);
+  startLive();
+}
+
+(function init() {
+  state.days = [7, 30, 90].includes(load("days", 30)) ? load("days", 30) : 30;
+  state.win = [2, 4, 6].includes(load("win", 4)) ? load("win", 4) : 4;
+  document.querySelectorAll("#periodControls .seg button").forEach((x) => x.setAttribute("aria-pressed", String(Number(x.dataset.days) === state.days)));
+  document.querySelectorAll(".best .seg button").forEach((x) => x.setAttribute("aria-pressed", String(Number(x.dataset.win) === state.win)));
+  App.init();
+  if (App.configured()) startDashboard(false);
+  else openSetup(false);
+})();
+</script>
+</body>
+</html>
