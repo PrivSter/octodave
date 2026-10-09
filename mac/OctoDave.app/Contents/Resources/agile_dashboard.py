@@ -797,7 +797,7 @@ class App:
         if not ids:
             raise ApiError("Octopus didn't list a device for live readings on your account. Click Change "
                            "details and enter the device ID Octo-Aid shows under Settings > Home Mini "
-                           "Device (it looks like 00-1C-55-00-00-02-0F-73).", 404, "no_device")
+                           "Device (it looks like 00-11-22-33-44-55-66-77).", 404, "no_device")
         return ids
 
     def _current_rate(self):

@@ -759,7 +759,7 @@ const App = {
       for (const m of ((ag.meterPoint || {}).meters || []))
         for (const sd of (m.smartDevices || []))
           if (sd.deviceId && !ids.includes(sd.deviceId)) ids.push(sd.deviceId);
-    if (!ids.length) throw new ApiError("Octopus didn't list a device for live readings on your account. Tap Change details and enter the device ID Octo-Aid shows under Settings › Home Mini Device (it looks like 00-1C-55-00-00-02-0F-73).", 404, "no_device");
+    if (!ids.length) throw new ApiError("Octopus didn't list a device for live readings on your account. Tap Change details and enter the device ID Octo-Aid shows under Settings › Home Mini Device (it looks like 00-11-22-33-44-55-66-77).", 404, "no_device");
     return ids;
   },
   rememberDevice(dev) {
