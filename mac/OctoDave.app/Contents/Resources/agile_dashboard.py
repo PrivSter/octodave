@@ -501,6 +501,7 @@ class App:
         self.live_at = 0.0
         self.today_cache = None
         self.today_at = 0.0
+        self.ahead_cache = None
         self.current_rate_cache = {}
         self.agreement_extended = None
         self.last_seen = time.monotonic()
@@ -580,6 +581,7 @@ class App:
             self.analysis_cache.clear()
             self.live_cache = None
             self.today_cache = None
+            self.ahead_cache = None
             self.current_rate_cache.clear()
         return self.status()
 
@@ -592,6 +594,7 @@ class App:
             self.analysis_cache.clear()
             self.live_cache = None
             self.today_cache = None
+            self.ahead_cache = None
         return self.status()
 
     # -- tariff history -----------------------------------------------------
@@ -954,6 +957,21 @@ class App:
         self.today_cache, self.today_at = out, time.time()
         return out
 
+    # -- prices ahead -------------------------------------------------------------
+
+    def ahead(self):
+        """Published unit rates from the current half-hour onwards (to 23:00 tomorrow after ~4pm)."""
+        if self.ahead_cache and time.time() - self.ahead_cache[0] < 15 * 60:
+            return self.ahead_cache[1]
+        now = int(time.time())
+        slot = now - now % 1800
+        code = self._tariff_at(now)
+        table = fetch_rates(self.octo, code, "standard-unit-rates", slot, slot + 48 * 3600)
+        slots = [[st * 1000, v] for st, v in zip(table.starts, table.values) if st >= slot]
+        out = {"code": code, "slots": slots}
+        self.ahead_cache = (time.time(), out)
+        return out
+
     # -- CSV ----------------------------------------------------------------------
 
     def csv(self, days):
@@ -1059,6 +1077,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, APP.live())
             if path == "/api/today":
                 return self._json(200, APP.today())
+            if path == "/api/ahead":
+                return self._json(200, APP.ahead())
             if path == "/api/export.csv":
                 body = APP.csv(days)
                 name = "agile-usage-%s-%dd.csv" % (datetime.now().strftime("%Y%m%d"), days)
@@ -1145,6 +1165,12 @@ header.top .sub { margin-top: 4px; }
 .seg button { border: 0; background: transparent; color: var(--ink); font: inherit; padding: 6px 12px; cursor: pointer; }
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button[aria-pressed="true"] { background: var(--accent); color: var(--surface); }
+.readout { min-height: 1.5em; font-size: 0.88rem; font-variant-numeric: tabular-nums; }
+.best { display: grid; gap: 4px; padding: 14px 16px; border-radius: 10px; background: var(--surface-2); }
+.best .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+.best h3 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+.best .big { font: 650 1.3rem/1.25 var(--font-num); font-variant-numeric: tabular-nums; color: var(--good); }
+#aheadChart svg { min-width: 0; }
 button.btn { font: inherit; border: 1px solid var(--line); background: var(--surface); color: var(--ink);
   border-radius: 8px; padding: 6px 12px; cursor: pointer; }
 button.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--surface); font-weight: 600; }
@@ -1289,6 +1315,27 @@ footer.settings { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: ce
         <div id="liveBand"></div>
       </div>
       <p class="notice" id="liveNote" hidden></p>
+    </section>
+
+    <section class="panel" aria-labelledby="aheadTitle">
+      <div class="panel-head">
+        <h2 id="aheadTitle">Prices ahead</h2>
+        <span class="muted small" id="aheadSpan"></span>
+      </div>
+      <div class="chart" id="aheadChart"><span class="loading">Fetching Agile prices…</span></div>
+      <p class="readout muted" id="aheadReadout">Click a bar to see its price.</p>
+      <div class="best">
+        <div class="row">
+          <h3>Cheapest window</h3>
+          <div class="seg" id="winSeg" role="group" aria-label="Window length">
+            <button type="button" data-win="2" aria-pressed="false">1h</button>
+            <button type="button" data-win="4" aria-pressed="true">2h</button>
+            <button type="button" data-win="6" aria-pressed="false">3h</button>
+          </div>
+        </div>
+        <p class="big" id="bestWindow">–</p>
+        <p class="muted small" id="bestNote"></p>
+      </div>
     </section>
 
     <div class="tiles" id="tiles"></div>
@@ -1478,12 +1525,12 @@ $("#csvBtn").addEventListener("click", () => {
 });
 
 // ---------- period ----------
-document.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => {
+document.querySelectorAll("#periodControls .seg button").forEach((b) => b.addEventListener("click", () => {
   state.days = Number(b.dataset.days);
-  document.querySelectorAll(".seg button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  document.querySelectorAll("#periodControls .seg button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
   loadAnalysis(false);
 }));
-$("#refreshBtn").addEventListener("click", () => loadAnalysis(true));
+$("#refreshBtn").addEventListener("click", () => { loadAnalysis(true); loadAhead(true); });
 
 // ---------- analysis ----------
 async function loadAnalysis(refresh) {
@@ -1805,13 +1852,115 @@ document.addEventListener("visibilitychange", () => {
   if (document.hidden || state.stopped) return;
   api("/api/ping").catch(() => {}); // tell the app this tab is still in use as soon as it's looked at
   if (state.live) pollLive();
+  loadAhead(false);
 });
+
+// ---------- prices ahead (same as the iPhone app) ----------
+const CHEAP_P = 15, AHEAD_EVERY_MS = 15 * 60000;
+const hhmm = (d) => d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+state.ahead = null; state.aheadAt = 0; state.win = 4;
+
+async function loadAhead(force) {
+  if (!force && state.ahead && Date.now() - state.aheadAt < AHEAD_EVERY_MS) { renderAhead(); return; }
+  try {
+    state.ahead = await api("/api/ahead");
+    state.aheadAt = Date.now();
+    renderAhead();
+  } catch (e) {
+    if (!state.ahead) $("#aheadChart").innerHTML = "";
+    $("#aheadReadout").textContent = e.message;
+  }
+}
+function priceColour(ms, p) {
+  if (p < CHEAP_P) return "var(--good)";
+  return isPeak(new Date(ms)) ? "var(--peak)" : "var(--off)";
+}
+function renderAhead() {
+  const a = state.ahead;
+  if (!a) return;
+  const now = Date.now(), slotStart = now - (now % 1800000);
+  const slots = a.slots.filter((s) => s[0] >= slotStart);
+  const box = $("#aheadChart");
+  if (!slots.length) { box.innerHTML = '<p class="muted small">No prices published beyond now yet. Tomorrow\'s usually appear around 4pm.</p>'; $("#bestWindow").textContent = "–"; return; }
+  const last = new Date(slots[slots.length - 1][0] + 1800000);
+  $("#aheadSpan").textContent = "Published to " + last.toLocaleDateString("en-GB", { weekday: "short" }) + " " + hhmm(last);
+  const L = 40, R = 6, T = 10, B = 24, H = 200;
+  const n = slots.length;
+  const W = Math.max(640, Math.floor(box.clientWidth || 960));
+  const vals = slots.map((s) => s[1]);
+  const vMin = Math.min(0, ...vals), vMax = Math.max(1, ...vals);
+  const tick = niceMax((vMax - vMin) / 4);
+  const lo = Math.floor(vMin / tick) * tick, hiV = Math.ceil(vMax / tick) * tick;
+  const y = (p) => T + (H - T - B) * (1 - (p - lo) / (hiV - lo));
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Agile unit prices for the coming half-hours" });
+  for (let v = lo; v <= hiV + 1e-9; v += tick) {
+    svg.appendChild(svgEl("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: "var(--line)", "stroke-width": 1 }));
+    const t = svgEl("text", { x: L - 5, y: y(v) + 4, "text-anchor": "end" }); t.textContent = Math.round(v) + "p"; svg.appendChild(t);
+  }
+  if (lo < 0) svg.appendChild(svgEl("line", { x1: L, x2: W - R, y1: y(0), y2: y(0), stroke: "var(--muted)", "stroke-width": 1 }));
+  const slot = (W - L - R) / n, bw = Math.max(2, slot - 2);
+  slots.forEach(([ms, p], i) => {
+    const x = L + i * slot;
+    const grp = svgEl("g", { "data-i": i, style: "cursor:pointer" });
+    grp.appendChild(svgEl("rect", { x, width: slot, y: T, height: H - T - B, fill: "transparent" }));
+    const top = Math.min(y(p), y(0)), h = Math.max(1, Math.abs(y(p) - y(0)));
+    grp.appendChild(svgEl("rect", { x: x + 1, width: bw, y: top, height: h, rx: 1.5, fill: priceColour(ms, p), "fill-opacity": i === 0 ? 1 : 0.85 }));
+    const tip = svgEl("title", {}); tip.textContent = hhmm(new Date(ms)) + ": " + pence(p) + "/kWh"; grp.appendChild(tip);
+    svg.appendChild(grp);
+    const d = new Date(ms);
+    if (d.getMinutes() === 0 && d.getHours() % 3 === 0 && x < W - R - 30) {
+      const t = svgEl("text", { x, y: H - 7, "text-anchor": "start" });
+      t.textContent = d.getHours() === 0 ? d.toLocaleDateString("en-GB", { weekday: "short" }) : String(d.getHours()).padStart(2, "0") + ":00";
+      svg.appendChild(t);
+    }
+  });
+  svg.appendChild(svgEl("rect", { x: L + 0.5, y: T - 2, width: slot, height: H - T - B + 2, fill: "none", stroke: "var(--ink)", "stroke-width": 1, rx: 2, "pointer-events": "none" }));
+  svg.addEventListener("click", (ev) => {
+    const grp = ev.target.closest("g[data-i]");
+    if (!grp) return;
+    const [ms, p] = slots[Number(grp.dataset.i)];
+    const d = new Date(ms), e = new Date(ms + 1800000);
+    $("#aheadReadout").textContent = (dayKey(d) === dayKey(new Date()) ? "Today" : d.toLocaleDateString("en-GB", { weekday: "long" })) + " " + hhmm(d) + "–" + hhmm(e) + ": " + pence(p) + "/kWh";
+  });
+  box.replaceChildren(svg);
+  renderBest(slots);
+}
+function renderBest(slots) {
+  const w = state.win;
+  let best = null;
+  for (let i = 0; i + w <= slots.length; i++) {
+    let ok = true, sum = 0;
+    for (let j = 0; j < w; j++) {
+      if (j && slots[i + j][0] - slots[i + j - 1][0] !== 1800000) { ok = false; break; }
+      sum += slots[i + j][1];
+    }
+    if (ok && (!best || sum / w < best.avg)) best = { i, avg: sum / w };
+  }
+  if (!best) { $("#bestWindow").textContent = "Not enough prices published yet"; $("#bestNote").textContent = ""; return; }
+  const s = new Date(slots[best.i][0]), e = new Date(slots[best.i + w - 1][0] + 1800000);
+  const today = dayKey(new Date()), tomorrow = dayKey(new Date(Date.now() + 86400000));
+  const when = (d) => dayKey(d) === today ? "today" : dayKey(d) === tomorrow ? "tomorrow" : d.toLocaleDateString("en-GB", { weekday: "long" });
+  $("#bestWindow").textContent = hhmm(s) + "–" + hhmm(e) + " " + when(s) + ", avg " + pence(best.avg);
+  const lowest = slots.reduce((a, b) => (b[1] < a[1] ? b : a));
+  const ld = new Date(lowest[0]);
+  const soon = slots[slots.length - 1][0] - Date.now() < 12 * 3600000;
+  $("#bestNote").textContent = "Lowest half-hour: " + hhmm(ld) + " " + when(ld) + " at " + pence(lowest[1]) + "." +
+    (soon ? " Tomorrow's prices usually appear around 4pm." : "");
+}
+document.querySelectorAll("#winSeg button").forEach((b) => b.addEventListener("click", () => {
+  state.win = Number(b.dataset.win);
+  document.querySelectorAll("#winSeg button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  renderAhead();
+}));
+let aheadResize = null;
+window.addEventListener("resize", () => { clearTimeout(aheadResize); aheadResize = setTimeout(renderAhead, 200); });
 
 // ---------- start ----------
 function startDashboard(fresh) {
   show($("#dash"), true); show($("#periodControls"), true);
   updateLiveToggle();
   loadAnalysis(!!fresh);
+  loadAhead(true);
   startLive();
 }
 
