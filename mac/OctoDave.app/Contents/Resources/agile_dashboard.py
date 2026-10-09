@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.9"
+VERSION = "1.9.1"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -1289,6 +1289,9 @@ details.workings summary { cursor: pointer; font-weight: 600; font-size: 0.9rem;
 details.workings dl { display: grid; grid-template-columns: minmax(0, 13em) minmax(0, 1fr); gap: 4px 14px; margin: 10px 0 0; font-size: 0.85rem; }
 details.workings dt { color: var(--muted); } details.workings dd { margin: 0; font-variant-numeric: tabular-nums; }
 @media (max-width: 480px) { details.workings dl { grid-template-columns: 1fr; } details.workings dd { margin-bottom: 6px; } }
+
+.period-caption { margin: 4px 0 -4px; font: 620 1.05rem/1.3 var(--font-ui); }
+.period-caption span { color: var(--muted); font-weight: 400; }
 </style>
 </head>
 <body>
@@ -1398,6 +1401,7 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
       <details class="workings"><summary>How the forecast is worked out</summary><dl id="billWorkings"></dl></details>
     </section>
 
+    <p class="period-caption" id="periodCaption" hidden></p>
     <div class="tiles" id="tiles"></div>
 
     <section class="panel" aria-labelledby="peakTitle">
@@ -1638,6 +1642,22 @@ function prepare(data) {
   return { rows, days: [...days.values()] };
 }
 
+
+// Heading above the history panels, so it's clear which period they cover.
+function renderPeriodCaption(data) {
+  const fmtD = (d) => d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  const el = $("#periodCaption"); el.replaceChildren();
+  const b = document.createElement("b"), sp = document.createElement("span");
+  if (state.days === "bill") {
+    const bill = billDates(billDay()), end = new Date(bill.next); end.setDate(end.getDate() - 1);
+    b.textContent = "This billing month: " + fmtD(bill.start) + " – " + fmtD(end);
+    sp.textContent = " · readings to " + fmtD(new Date(data.data_to - 1));
+  } else {
+    b.textContent = "Last " + state.days + " days: " + fmtD(new Date(data.data_from)) + " – " + fmtD(new Date(data.data_to - 1));
+  }
+  el.append(b, sp); show(el, true);
+}
+
 function renderAll() {
   const data = state.data;
   const prep = prepare(data);
@@ -1665,6 +1685,7 @@ function renderAll() {
   tile("Average price", pence(totalKwh ? energy / totalKwh : null) + "/kWh", "Energy only, before standing charge");
   tile("Spent 4–7pm", pounds(peakCost), Math.round(energy ? (peakCost / energy) * 100 : 0) + "% of energy cost for " + Math.round(totalKwh ? (peakKwh / totalKwh) * 100 : 0) + "% of use", "peak");
 
+  renderPeriodCaption(data);
   renderDaily(prep);
   renderShift();
   renderWorst(prep);
