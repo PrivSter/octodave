@@ -361,7 +361,7 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
         <button type="button" class="btn" id="editBtn">Change details</button>
         <button type="button" class="btn danger" id="forgetBtn">Forget my details</button>
       </span>
-      <span>OctoDave for iPhone 1.10</span>
+      <span>OctoDave for iPhone 1.11</span>
     </footer>
   </div>
 </div>
@@ -374,7 +374,7 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
 // your details in this app's local storage. No server, no third parties.
 // ======================================================================
 
-const VERSION = "1.10";
+const VERSION = "1.11";
 const API_HOSTS = ["https://api.octopus.energy", "https://api.oegb-kraken.energy"];
 const STORE = "octodave.v1.";
 const DIST_TO_GSP = { "10": "_A", "11": "_B", "12": "_C", "13": "_D", "14": "_E", "15": "_F", "16": "_G",
@@ -588,6 +588,22 @@ function priceToday(rows, units, dayStart) {
   return { kwh, energy, unpriced };
 }
 
+// Home Mini half-hours -> Map(slot start epoch -> Wh) for slots at or after `start`. Same method as
+// priceToday(): the rise in the running total since the previous slot, or each slot's own delta.
+function halfhourEnergy(rows, start) {
+  const out = new Map();
+  const useCumulative = rows.some((r) => r[1] != null);
+  let prev = null;
+  for (const [t, cum, delta] of rows) {
+    if (useCumulative) {
+      if (cum == null) continue;
+      if (prev != null && cum >= prev && t >= start) out.set(t, cum - prev);
+      prev = cum;
+    } else if (delta != null && t >= start) out.set(t, delta);
+  }
+  return out;
+}
+
 // ---------- the app ----------
 const App = {
   cfg: load("config", {}),
@@ -749,6 +765,21 @@ const App = {
     for (const r of cons) {
       try { const k = Number(r.consumption); if (!isNaN(k)) readings.set(parseTs(r.interval_start), k); } catch (e) { /* skip bad row */ }
     }
+    // Settled readings arrive about a day late. Fill the half-hours since the last one (at most three
+    // days back) from the Home Mini, marked as estimates until Octopus's readings replace them.
+    const estimated = new Set();
+    let estimateNote = null;
+    const lastSettled = readings.size ? Math.max(...readings.keys()) + 1800 : tFrom;
+    let gapFrom = Math.max(lastSettled, tFrom, now - 3 * 86400);
+    gapFrom -= gapFrom % 1800;
+    if (now - gapFrom >= 1800 && (cfg.account || cfg.device_id)) {
+      try {
+        for (const [t, wh] of halfhourEnergy(await this.homeMiniRows(gapFrom, now), gapFrom))
+          if (!readings.has(t) && t >= tFrom && t <= now) { readings.set(t, wh / 1000); estimated.add(t); }
+      } catch (e) {
+        estimateNote = "Couldn't add today's Home Mini half-hours (" + e.message + "), so the latest figures stop at Octopus's last settled reading.";
+      }
+    }
     if (!readings.size) throw new ApiError("Octopus has no half-hourly readings for this period yet. Smart meter data usually arrives the next day.", 404, "no_data");
     const times = [...readings.keys()].sort((a, b) => a - b);
     const t0 = times[0], t1 = times[times.length - 1] + 1800;
@@ -786,7 +817,7 @@ const App = {
     const hh = times.map((t) => {
       const rate = periodFor(t)[3].at(t);
       if (rate == null) missing++;
-      return [t * 1000, Math.round(readings.get(t) * 1e4) / 1e4, rate == null ? null : Math.round(rate * 1e4) / 1e4];
+      return [t * 1000, Math.round(readings.get(t) * 1e4) / 1e4, rate == null ? null : Math.round(rate * 1e4) / 1e4, estimated.has(t) ? 1 : 0];
     });
 
     const dates = [...new Set(times.map(localDate))].sort();
@@ -833,7 +864,8 @@ const App = {
     return {
       generated: Date.now(), days, from: from || null, data_from: t0 * 1000, data_to: t1 * 1000,
       region: cfg.region.replace(/_/g, ""), tariff_history: history, tariff_from_account: fromAccount,
-      missing_prices: missing, notes, hh, standing_by_day: standingByDay, comparisons,
+      missing_prices: missing, estimated_from: estimated.size ? Math.min(...estimated) * 1000 : null,
+      notes: estimateNote ? notes.concat([estimateNote]) : notes, hh, standing_by_day: standingByDay, comparisons,
     };
   },
 
@@ -899,6 +931,22 @@ const App = {
     return this.liveCache;
   },
 
+  // Half-hourly Home Mini telemetry from the half-hour before `start` (as a baseline) to `end`.
+  async homeMiniRows(start, end) {
+    const q = "query HalfHours($device: String!, $start: DateTime, $end: DateTime) { smartMeterTelemetry(deviceId: $device, start: $start, end: $end, grouping: HALF_HOURLY) { readAt consumption consumptionDelta } }";
+    let rows = null, lastError = null;
+    for (const dev of await this.deviceIds()) {
+      try { rows = (await this.octo.graphql(q, { device: dev, start: isoUtc(start - 1800), end: isoUtc(end) })).smartMeterTelemetry || []; }
+      catch (e) { if (e.code === "rate_limited") throw e; lastError = e; continue; }
+      if (rows.length) break;
+    }
+    if (!rows || !rows.length) throw lastError ? this.deviceError(lastError) : new ApiError("Your Home Mini hasn't sent any readings for that time.", 404, "no_reading");
+    return rows.filter((r) => r.readAt).map((r) => {
+      let t = parseTs(r.readAt); t -= t % 1800;
+      return [t, r.consumption == null ? null : Number(r.consumption), r.consumptionDelta == null ? null : Number(r.consumptionDelta)];
+    }).sort((a, b) => a[0] - b[0]);
+  },
+
   async today() {
     const now = nowS();
     const dayStart = localDayStart(localDate(now));
@@ -932,12 +980,12 @@ const App = {
   },
 
   csv(data) {
-    const lines = ["interval_start_local,kwh,unit_rate_p_per_kwh,cost_p"];
+    const lines = ["interval_start_local,kwh,unit_rate_p_per_kwh,cost_p,source"];
     const pad = (n) => String(n).padStart(2, "0");
-    for (const [ms, k, p] of data.hh) {
+    for (const [ms, k, p, est] of data.hh) {
       const d = new Date(ms);
       const ts = d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
-      lines.push(ts + "," + k + "," + (p == null ? "" : p) + "," + (p == null ? "" : (k * p).toFixed(4)));
+      lines.push(ts + "," + k + "," + (p == null ? "" : p) + "," + (p == null ? "" : (k * p).toFixed(4)) + "," + (est ? "home_mini_estimate" : "settled"));
     }
     return lines.join("\n") + "\n";
   },
@@ -1074,10 +1122,11 @@ async function loadAnalysis(refresh) {
 }
 
 function prepare(data) {
-  const rows = data.hh.map(([ms, k, p]) => { const d = new Date(ms); return { d, k, p, peak: isPeak(d), day: dayKey(d), slot: d.getHours() * 2 + (d.getMinutes() >= 30 ? 1 : 0) }; });
+  const rows = data.hh.map(([ms, k, p, est]) => { const d = new Date(ms); return { d, k, p, est: !!est, peak: isPeak(d), day: dayKey(d), slot: d.getHours() * 2 + (d.getMinutes() >= 30 ? 1 : 0) }; });
   const days = new Map();
   for (const r of rows) {
-    if (!days.has(r.day)) days.set(r.day, { day: r.day, rows: [], kwh: 0, cost: 0, peakKwh: 0, peakCost: 0 });
+    if (!days.has(r.day)) days.set(r.day, { day: r.day, rows: [], kwh: 0, cost: 0, peakKwh: 0, peakCost: 0, est: false });
+    if (r.est) days.get(r.day).est = true;
     const g = days.get(r.day);
     g.rows.push(r); g.kwh += r.k;
     const c = r.p == null ? 0 : r.k * r.p;
@@ -1094,6 +1143,10 @@ function renderPeriodCaption(data) {
   const el = $("#periodCaption"); el.replaceChildren();
   const b = document.createElement("b"), sp = document.createElement("span");
   b.textContent = "Last " + state.days + " days: " + fmtD(new Date(data.data_from)) + " – " + fmtD(new Date(data.data_to - 1));
+  if (data.estimated_from) {
+    const e = new Date(data.estimated_from);
+    sp.textContent = " · from " + e.toLocaleDateString("en-GB", { weekday: "short" }) + " " + e.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) + " on, figures are Home Mini estimates";
+  }
   el.append(b, sp); show(el, true);
 }
 
@@ -1109,7 +1162,7 @@ function renderAll() {
   const peakKwh = prep.days.reduce((a, g) => a + g.peakKwh, 0);
   const fmtD = (d) => d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
   $("#subline").textContent = "Readings " + fmtD(new Date(data.data_from)) + " to " + fmtD(new Date(data.data_to - 1)) +
-    " (" + prep.days.length + " days), region " + data.region + ". History arrives a day late.";
+    " (" + prep.days.length + " days), region " + data.region + "." + (data.estimated_from ? " The latest half-hours are Home Mini estimates until Octopus's readings arrive." : " History arrives a day late.");
 
   $("#tiles").innerHTML = "";
   const tile = (label, value, sub, cls) => {
@@ -1158,8 +1211,9 @@ function renderDaily(prep) {
     const rest = g.cost - g.peakCost;
     const grp = svgEl("g", { "data-i": i, style: "cursor:pointer" });
     grp.appendChild(svgEl("rect", { x: L + i * slot, width: slot, y: T, height: H - T - B, fill: "transparent" }));
-    grp.appendChild(svgEl("rect", { x, width: bw, y: y(rest), height: Math.max(0, y(0) - y(rest)), fill: "var(--off)", rx: 1.5 }));
-    grp.appendChild(svgEl("rect", { x, width: bw, y: y(g.cost), height: Math.max(0, y(rest) - y(g.cost)), fill: "var(--peak)", rx: 1.5 }));
+    const op = g.est ? 0.5 : 1;
+    grp.appendChild(svgEl("rect", { x, width: bw, y: y(rest), height: Math.max(0, y(0) - y(rest)), fill: "var(--off)", "fill-opacity": op, rx: 1.5 }));
+    grp.appendChild(svgEl("rect", { x, width: bw, y: y(g.cost), height: Math.max(0, y(rest) - y(g.cost)), fill: "var(--peak)", "fill-opacity": op, rx: 1.5 }));
     svg.appendChild(grp);
     if (i % labelEvery === 0) {
       const t = svgEl("text", { x: x + bw / 2, y: H - 7, "text-anchor": "middle" });
@@ -1171,7 +1225,7 @@ function renderDaily(prep) {
     const grp = ev.target.closest("g[data-i]");
     if (!grp) return;
     const g = prep.days[Number(grp.dataset.i)];
-    $("#dailyReadout").textContent = dayLabel(g.day) + ": " + pounds(g.cost) + " for " + kwhFmt(g.kwh) + ", " + pounds(g.peakCost) + " of it at 4–7pm";
+    $("#dailyReadout").textContent = dayLabel(g.day) + ": " + pounds(g.cost) + " for " + kwhFmt(g.kwh) + ", " + pounds(g.peakCost) + " of it at 4–7pm" + (g.day === dayKey(new Date()) ? " (so far today)" : "") + (g.est ? ". Includes Home Mini estimates." : "");
   });
   box.replaceChildren(svg);
 }
@@ -1238,7 +1292,7 @@ function renderHeatmap(prep) {
     }
     g.rows.forEach((r, j) => {
       svg.appendChild(svgEl("rect", { x: L + r.slot * cw + 0.5, y: yy + 0.5, width: cw - 1, height: ch - 1, rx: 1,
-        fill: "var(--accent)", "fill-opacity": (0.06 + 0.94 * Math.sqrt(r.k / max)).toFixed(3), "data-d": i, "data-r": j }));
+        fill: "var(--accent)", "fill-opacity": ((0.06 + 0.94 * Math.sqrt(r.k / max)) * (r.est ? 0.55 : 1)).toFixed(3), "data-d": i, "data-r": j }));
     });
   });
   svg.appendChild(svgEl("rect", { x: L + PEAK_START * 2 * cw - 1, y: T - 2, width: (PEAK_END - PEAK_START) * 2 * cw + 2, height: n * ch + 4,
@@ -1247,7 +1301,7 @@ function renderHeatmap(prep) {
     const el = ev.target;
     if (!el.dataset || el.dataset.d == null) return;
     const g = prep.days[Number(el.dataset.d)], r = g.rows[Number(el.dataset.r)];
-    $("#heatReadout").textContent = dayLabel(g.day) + " " + hhmm(r.d) + ": " + r.k.toFixed(2) + " kWh at " + pence(r.p) + (r.p != null ? " (" + pence(r.k * r.p) + ")" : "");
+    $("#heatReadout").textContent = dayLabel(g.day) + " " + hhmm(r.d) + ": " + r.k.toFixed(2) + " kWh at " + pence(r.p) + (r.p != null ? " (" + pence(r.k * r.p) + ")" : "") + (r.est ? ", Home Mini estimate" : "");
   });
   box.replaceChildren(svg);
 }
@@ -1314,7 +1368,8 @@ function computeForecast(data, bill) {
     g.energy += k * (p || 0); g.kwh += k;
     byDay.set(key, g);
   }
-  const keys = [...byDay.keys()].sort();
+  const todayK = dayKey(new Date());
+  const keys = [...byDay.keys()].filter((k) => k < todayK).sort(); // today is only part-way through
   if (!keys.length) return null;
   const st = (k) => data.standing_by_day[k] || 0;
   const cost = (k) => byDay.get(k).energy + st(k);
@@ -1402,7 +1457,7 @@ function renderForecast(f, bill) {
     ["Days left", f.remaining + " × " + pounds(f.avgEnergy + f.standingDay) + " = " + pounds(f.remaining * (f.avgEnergy + f.standingDay))],
     ["Forecast", pounds(f.projected)],
     ["Last billing month", f.lastComplete ? pounds(f.lastTotal) + " over " + f.lastDays + " days" : "Only " + f.lastDays + " days of readings"],
-    ["Not included", "Today, until Octopus's settled readings arrive tomorrow"],
+    ["Not included", "Today, which is only part-way through. Yesterday may be a Home Mini estimate until Octopus's settled readings arrive"],
   ];
   const dl = $("#billWorkings"); dl.replaceChildren();
   for (const [k, v] of rows) {

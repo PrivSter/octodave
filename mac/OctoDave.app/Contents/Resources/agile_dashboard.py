@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.10"
+VERSION = "1.11"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -482,6 +482,27 @@ def price_today(rows, units, day_start):
     return kwh, energy, unpriced
 
 
+def halfhour_energy(rows, start):
+    """Home Mini half-hours -> {slot_start_epoch: Wh} for slots at or after `start`.
+
+    rows as for price_today(). Same method: the rise in the running total since the previous slot,
+    or each slot's own delta when Octopus sends no running totals.
+    """
+    out = {}
+    use_cumulative = any(cum is not None for _, cum, _ in rows)
+    prev = None
+    for t, cum, delta in rows:
+        if use_cumulative:
+            if cum is None:
+                continue
+            if prev is not None and cum >= prev and t >= start:
+                out[t] = cum - prev
+            prev = cum
+        elif delta is not None and t >= start:
+            out[t] = delta
+    return out
+
+
 # --------------------------------------------------------------------------
 # The app
 # --------------------------------------------------------------------------
@@ -716,6 +737,23 @@ class App:
                 readings[parse_ts(r["interval_start"])] = float(r["consumption"])
             except (KeyError, ValueError, TypeError):
                 continue
+
+        # Settled readings arrive about a day late. Fill the half-hours since the last one (at most
+        # three days back) from the Home Mini, marked as estimates until Octopus's readings replace them.
+        estimated = set()
+        estimate_note = None
+        last_settled = (max(readings) + 1800) if readings else t_from
+        gap_from = max(last_settled, t_from, int(now) - 3 * 86400)
+        gap_from -= gap_from % 1800
+        if int(now) - gap_from >= 1800 and (cfg.get("account") or cfg.get("device_id")):
+            try:
+                for t, wh in halfhour_energy(self._home_mini_rows(gap_from, int(now)), gap_from).items():
+                    if t not in readings and t_from <= t <= now:
+                        readings[t] = wh / 1000.0
+                        estimated.add(t)
+            except ApiError as e:
+                estimate_note = ("Couldn't add today's Home Mini half-hours (%s), so the latest figures stop at "
+                                 "Octopus's last settled reading." % e)
         if not readings:
             raise ApiError("Octopus has no half-hourly readings for this period yet. Smart meter data "
                            "usually arrives the next day.", 404, "no_data")
@@ -768,7 +806,8 @@ class App:
             rate = period_for(t)[3].at(t)
             if rate is None:
                 missing += 1
-            hh.append([t * 1000, round(readings[t], 4), None if rate is None else round(rate, 4)])
+            hh.append([t * 1000, round(readings[t], 4), None if rate is None else round(rate, 4),
+                       1 if t in estimated else 0])
 
         dates = sorted({local_date(t) for t in times})
         standing_by_day = {}
@@ -778,7 +817,7 @@ class App:
             v = st.at(ds) if st else None
             standing_by_day[d] = round(v if v is not None else (st.nearest(ds) if st else 0) or 0, 4)
 
-        actual_energy = sum(k * (p or 0) for _, k, p in hh)
+        actual_energy = sum(row[1] * (row[2] or 0) for row in hh)
         actual_standing = sum(standing_by_day.values())
         kwh_total = sum(readings.values())
 
@@ -831,7 +870,8 @@ class App:
             "tariff_from_account": from_account,
             "kwh_total": round(kwh_total, 3),
             "missing_prices": missing,
-            "notes": notes,
+            "estimated_from": (min(estimated) * 1000) if estimated else None,
+            "notes": notes + ([estimate_note] if estimate_note else []),
             "hh": hh,
             "standing_by_day": standing_by_day,
             "comparisons": comparisons,
@@ -949,6 +989,39 @@ class App:
         self.live_cache, self.live_at = out, time.time()
         return out
 
+    # -- Home Mini half-hours ------------------------------------------------------
+
+    def _home_mini_rows(self, start, end):
+        """Half-hourly Home Mini telemetry from the half-hour before `start` (for a baseline) to `end`."""
+        q = ("query HalfHours($device: String!, $start: DateTime, $end: DateTime) { "
+             "smartMeterTelemetry(deviceId: $device, start: $start, end: $end, grouping: HALF_HOURLY) "
+             "{ readAt consumption consumptionDelta } }")
+        rows, last_error = None, None
+        for dev in self._device_ids():
+            try:
+                rows = (self.octo.graphql(q, {"device": dev, "start": iso_utc(start - 1800),
+                                              "end": iso_utc(end)}).get("smartMeterTelemetry")) or []
+            except ApiError as e:
+                if e.code == "rate_limited":
+                    raise
+                last_error = e
+                continue
+            if rows:
+                break
+        if not rows:
+            raise (self._device_error(last_error) if last_error else
+                   ApiError("Your Home Mini hasn't sent any readings for that time.", 404, "no_reading"))
+        parsed = []
+        for r in rows:
+            if not r.get("readAt"):
+                continue
+            t = parse_ts(r["readAt"])
+            t -= t % 1800
+            cum, delta = r.get("consumption"), r.get("consumptionDelta")
+            parsed.append((t, None if cum is None else float(cum), None if delta is None else float(delta)))
+        parsed.sort()
+        return parsed
+
     # -- today so far ------------------------------------------------------------
 
     def _tariff_now(self):
@@ -1025,11 +1098,13 @@ class App:
 
     def csv(self, days, frm=None):
         data = self.analysis(days, frm=frm)
-        lines = ["interval_start_local,kwh,unit_rate_p_per_kwh,cost_p"]
-        for ms, kwh, p in data["hh"]:
+        lines = ["interval_start_local,kwh,unit_rate_p_per_kwh,cost_p,source"]
+        for row in data["hh"]:
+            ms, kwh, p = row[:3]
             ts = datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M")
             cost = "" if p is None else "%.4f" % (kwh * p)
-            lines.append("%s,%s,%s,%s" % (ts, kwh, "" if p is None else p, cost))
+            src = "home_mini_estimate" if len(row) > 3 and row[3] else "settled"
+            lines.append("%s,%s,%s,%s,%s" % (ts, kwh, "" if p is None else p, cost, src))
         return "\n".join(lines) + "\n"
 
 
@@ -1685,10 +1760,11 @@ async function loadAnalysis(refresh) {
 }
 
 function prepare(data) {
-  const rows = data.hh.map(([ms, k, p]) => { const d = new Date(ms); return { d, k, p, peak: isPeak(d), day: dayKey(d), slot: d.getHours() * 2 + (d.getMinutes() >= 30 ? 1 : 0) }; });
+  const rows = data.hh.map(([ms, k, p, est]) => { const d = new Date(ms); return { d, k, p, est: !!est, peak: isPeak(d), day: dayKey(d), slot: d.getHours() * 2 + (d.getMinutes() >= 30 ? 1 : 0) }; });
   const days = new Map();
   for (const r of rows) {
-    if (!days.has(r.day)) days.set(r.day, { day: r.day, rows: [], kwh: 0, cost: 0, peakKwh: 0, peakCost: 0 });
+    if (!days.has(r.day)) days.set(r.day, { day: r.day, rows: [], kwh: 0, cost: 0, peakKwh: 0, peakCost: 0, est: false });
+    if (r.est) days.get(r.day).est = true;
     const g = days.get(r.day);
     g.rows.push(r); g.kwh += r.k;
     const c = r.p == null ? 0 : r.k * r.p;
@@ -1705,6 +1781,10 @@ function renderPeriodCaption(data) {
   const el = $("#periodCaption"); el.replaceChildren();
   const b = document.createElement("b"), sp = document.createElement("span");
   b.textContent = "Last " + state.days + " days: " + fmtD(new Date(data.data_from)) + " – " + fmtD(new Date(data.data_to - 1));
+  if (data.estimated_from) {
+    const e = new Date(data.estimated_from);
+    sp.textContent = " · from " + e.toLocaleDateString("en-GB", { weekday: "short" }) + " " + e.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) + " on, figures are Home Mini estimates";
+  }
   el.append(b, sp); show(el, true);
 }
 
@@ -1721,7 +1801,7 @@ function renderAll() {
   const fmtD = (d) => d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 
   $("#subline").textContent = "Half-hourly readings from " + fmtD(from) + " to " + fmtD(to) +
-    " (" + prep.days.length + " days), region " + data.region + ". Readings usually arrive a day late.";
+    " (" + prep.days.length + " days), region " + data.region + "." + (data.estimated_from ? " The latest half-hours are Home Mini estimates until Octopus's readings arrive." : " Readings usually arrive a day late.");
 
   $("#tiles").innerHTML = "";
   const tile = (label, value, sub, cls) => {
@@ -1776,9 +1856,10 @@ function renderDaily(prep) {
   prep.days.forEach((g, i) => {
     const x = L + i * slot + (slot - bw) / 2;
     const rest = g.cost - g.peakCost;
-    const r1 = svgEl("rect", { x, width: bw, y: y(rest), height: Math.max(0, y(0) - y(rest)), fill: "var(--off)", rx: 1.5 });
-    const r2 = svgEl("rect", { x, width: bw, y: y(g.cost), height: Math.max(0, y(rest) - y(g.cost)), fill: "var(--peak)", rx: 1.5 });
-    const tip = svgEl("title", {}); tip.textContent = dayLabel(g.day) + ": " + pounds(g.cost) + " (" + pounds(g.peakCost) + " at 4–7pm)";
+    const op = g.est ? 0.5 : 1;
+    const r1 = svgEl("rect", { x, width: bw, y: y(rest), height: Math.max(0, y(0) - y(rest)), fill: "var(--off)", "fill-opacity": op, rx: 1.5 });
+    const r2 = svgEl("rect", { x, width: bw, y: y(g.cost), height: Math.max(0, y(rest) - y(g.cost)), fill: "var(--peak)", "fill-opacity": op, rx: 1.5 });
+    const tip = svgEl("title", {}); tip.textContent = dayLabel(g.day) + ": " + pounds(g.cost) + " (" + pounds(g.peakCost) + " at 4–7pm)" + (g.day === dayKey(new Date()) ? ", so far today" : "") + (g.est ? ", includes Home Mini estimates" : "");
     r2.appendChild(tip); r1.appendChild(tip.cloneNode(true));
     svg.appendChild(r1); svg.appendChild(r2);
     if (i % labelEvery === 0) {
@@ -1848,9 +1929,9 @@ function renderHeatmap(prep) {
     }
     for (const r of g.rows) {
       const rect = svgEl("rect", { x: L + r.slot * cw + 1, y: yy + 1, width: cw - 2, height: ch - 2, rx: 1.5,
-        fill: "var(--accent)", "fill-opacity": (0.06 + 0.94 * Math.sqrt(r.k / max)).toFixed(3) });
+        fill: "var(--accent)", "fill-opacity": ((0.06 + 0.94 * Math.sqrt(r.k / max)) * (r.est ? 0.55 : 1)).toFixed(3) });
       const tip = svgEl("title", {});
-      tip.textContent = dayLabel(g.day) + " " + r.d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) + ": " + r.k.toFixed(2) + " kWh at " + pence(r.p);
+      tip.textContent = dayLabel(g.day) + " " + r.d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) + ": " + r.k.toFixed(2) + " kWh at " + pence(r.p) + (r.est ? " (Home Mini estimate)" : "");
       rect.appendChild(tip); svg.appendChild(rect);
     }
   });
@@ -2027,7 +2108,8 @@ function computeForecast(data, bill) {
     g.energy += k * (p || 0); g.kwh += k;
     byDay.set(key, g);
   }
-  const keys = [...byDay.keys()].sort();
+  const todayK = dayKey(new Date());
+  const keys = [...byDay.keys()].filter((k) => k < todayK).sort(); // today is only part-way through
   if (!keys.length) return null;
   const st = (k) => data.standing_by_day[k] || 0;
   const cost = (k) => byDay.get(k).energy + st(k);
@@ -2115,7 +2197,7 @@ function renderForecast(f, bill) {
     ["Days left", f.remaining + " × " + pounds(f.avgEnergy + f.standingDay) + " = " + pounds(f.remaining * (f.avgEnergy + f.standingDay))],
     ["Forecast", pounds(f.projected)],
     ["Last billing month", f.lastComplete ? pounds(f.lastTotal) + " over " + f.lastDays + " days" : "Only " + f.lastDays + " days of readings"],
-    ["Not included", "Today, until Octopus's settled readings arrive tomorrow"],
+    ["Not included", "Today, which is only part-way through. Yesterday may be a Home Mini estimate until Octopus's settled readings arrive"],
   ];
   const dl = $("#billWorkings"); dl.replaceChildren();
   for (const [k, v] of rows) {
