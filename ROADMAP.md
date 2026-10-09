@@ -30,7 +30,7 @@ Reference app: **Octo-Aid** (Dave uses it on his iPhone). Its screens were revie
 
 Ordered by usefulness to Dave. Each needs to work on both apps.
 
-### 2.1 Billing month (done in 1.9)
+### 2.1 Billing month (done in 1.9; the period button was removed in 1.9.2 because it duplicated the panel)
 Octo-Aid works in billing months; Dave's runs from the **15th to the 14th**. Add a "billing day" setting (default 15) and a "This billing month" period alongside 7d/30d/90d.
 - Cost so far this billing month, with kWh.
 - Compared with the same point in the last billing month ("£0.06 higher than this point last billing month").

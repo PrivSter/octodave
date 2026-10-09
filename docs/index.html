@@ -177,7 +177,6 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
           <button type="button" data-days="7" aria-pressed="false">7d</button>
           <button type="button" data-days="30" aria-pressed="true">30d</button>
           <button type="button" data-days="90" aria-pressed="false">90d</button>
-          <button type="button" data-days="bill" aria-pressed="false" aria-label="Billing month">Bill</button>
         </div>
         <button type="button" class="btn" id="refreshBtn" aria-label="Refresh">Refresh</button>
       </div>
@@ -331,7 +330,7 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
         <button type="button" class="btn" id="editBtn">Change details</button>
         <button type="button" class="btn danger" id="forgetBtn">Forget my details</button>
       </span>
-      <span>OctoDave for iPhone 1.9.1</span>
+      <span>OctoDave for iPhone 1.9.2</span>
     </footer>
   </div>
 </div>
@@ -344,7 +343,7 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
 // your details in this app's local storage. No server, no third parties.
 // ======================================================================
 
-const VERSION = "1.9.1";
+const VERSION = "1.9.2";
 const API_HOSTS = ["https://api.octopus.energy", "https://api.oegb-kraken.energy"];
 const STORE = "octodave.v1.";
 const DIST_TO_GSP = { "10": "_A", "11": "_B", "12": "_C", "13": "_D", "14": "_E", "15": "_F", "16": "_G",
@@ -993,7 +992,7 @@ $("#forgetBtn").addEventListener("click", () => {
 $("#csvBtn").addEventListener("click", async () => {
   if (!state.data) return;
   const d = new Date(), pad = (n) => String(n).padStart(2, "0");
-  const name = "agile-usage-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "-" + (state.days === "bill" ? "billing-month" : state.days + "d") + ".csv";
+  const name = "agile-usage-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "-" + state.days + "d" + ".csv";
   const file = new File([App.csv(state.data)], name, { type: "text/csv" });
   try {
     if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file] }); return; }
@@ -1006,7 +1005,7 @@ $("#csvBtn").addEventListener("click", async () => {
 
 // ---------- period ----------
 document.querySelectorAll("#periodControls .seg button").forEach((b) => b.addEventListener("click", () => {
-  state.days = b.dataset.days === "bill" ? "bill" : Number(b.dataset.days);
+  state.days = Number(b.dataset.days);
   document.querySelectorAll("#periodControls .seg button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
   save("days", state.days);
   loadAnalysis(false);
@@ -1025,7 +1024,7 @@ async function loadAnalysis(refresh) {
   if (!state.data || state.data.days !== state.days)
     $("#tiles").innerHTML = '<div class="tile" style="grid-column:1/-1"><span class="loading">Fetching your half-hourly data from Octopus…</span></div>';
   try {
-    state.data = await App.analysis(state.days === "bill" ? 1 : state.days, refresh, state.days === "bill" ? ymd(billDates(App.status().bill_day).start) : null, true);
+    state.data = await App.analysis(state.days, refresh, null, true);
     state.analysisAt = Date.now();
     renderAll();
   } catch (e) {
@@ -1056,13 +1055,7 @@ function renderPeriodCaption(data) {
   const fmtD = (d) => d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
   const el = $("#periodCaption"); el.replaceChildren();
   const b = document.createElement("b"), sp = document.createElement("span");
-  if (state.days === "bill") {
-    const bill = billDates(App.status().bill_day), end = new Date(bill.next); end.setDate(end.getDate() - 1);
-    b.textContent = "This billing month: " + fmtD(bill.start) + " – " + fmtD(end);
-    sp.textContent = " · readings to " + fmtD(new Date(data.data_to - 1));
-  } else {
-    b.textContent = "Last " + state.days + " days: " + fmtD(new Date(data.data_from)) + " – " + fmtD(new Date(data.data_to - 1));
-  }
+  b.textContent = "Last " + state.days + " days: " + fmtD(new Date(data.data_from)) + " – " + fmtD(new Date(data.data_to - 1));
   el.append(b, sp); show(el, true);
 }
 
@@ -1583,7 +1576,7 @@ function startDashboard(fresh) {
   updateLiveToggle();
   // Show the last analysis straight away while a fresh one loads.
   const cached = load("analysis", null);
-  const wantKey = (state.days === "bill" ? ymd(billDates(App.status().bill_day).start) : state.days) + "|true";
+  const wantKey = state.days + "|true";
   if (!fresh && cached && cached.key === wantKey && cached.data) {
     state.data = cached.data;
     App.analysisMem[wantKey] = { at: cached.at, data: cached.data };
@@ -1596,9 +1589,9 @@ function startDashboard(fresh) {
 }
 
 (function init() {
-  state.days = [7, 30, 90, "bill"].includes(load("days", 30)) ? load("days", 30) : 30;
+  state.days = [7, 30, 90].includes(load("days", 30)) ? load("days", 30) : 30;
   state.win = [2, 4, 6].includes(load("win", 4)) ? load("win", 4) : 4;
-  document.querySelectorAll("#periodControls .seg button").forEach((x) => x.setAttribute("aria-pressed", String((x.dataset.days === "bill" ? "bill" : Number(x.dataset.days)) === state.days)));
+  document.querySelectorAll("#periodControls .seg button").forEach((x) => x.setAttribute("aria-pressed", String(Number(x.dataset.days) === state.days)));
   document.querySelectorAll(".best .seg button").forEach((x) => x.setAttribute("aria-pressed", String(Number(x.dataset.win) === state.win)));
   App.init();
   if (App.configured()) startDashboard(false);

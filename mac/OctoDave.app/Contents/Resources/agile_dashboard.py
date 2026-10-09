@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.9.1"
+VERSION = "1.9.2"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -1306,7 +1306,6 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
         <button type="button" data-days="7" aria-pressed="false">7 days</button>
         <button type="button" data-days="30" aria-pressed="true">30 days</button>
         <button type="button" data-days="90" aria-pressed="false">90 days</button>
-        <button type="button" data-days="bill" aria-pressed="false">Billing month</button>
       </div>
       <button type="button" class="btn" id="refreshBtn">Refresh</button>
     </div>
@@ -1591,7 +1590,7 @@ $("#csvBtn").addEventListener("click", () => {
 
 // ---------- period ----------
 document.querySelectorAll("#periodControls .seg button").forEach((b) => b.addEventListener("click", () => {
-  state.days = b.dataset.days === "bill" ? "bill" : Number(b.dataset.days);
+  state.days = Number(b.dataset.days);
   document.querySelectorAll("#periodControls .seg button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
   loadAnalysis(false);
 }));
@@ -1599,9 +1598,7 @@ $("#refreshBtn").addEventListener("click", () => { loadAnalysis(true); loadAhead
 
 // ---------- analysis ----------
 const billDay = () => (state.status && state.status.bill_day) || 15;
-function periodQuery() {
-  return state.days === "bill" ? "days=1&from=" + ymd(billDates(billDay()).start) : "days=" + state.days;
-}
+function periodQuery() { return "days=" + state.days; }
 async function loadBill(refresh) {
   const bill = billDates(billDay());
   try {
@@ -1648,13 +1645,7 @@ function renderPeriodCaption(data) {
   const fmtD = (d) => d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
   const el = $("#periodCaption"); el.replaceChildren();
   const b = document.createElement("b"), sp = document.createElement("span");
-  if (state.days === "bill") {
-    const bill = billDates(billDay()), end = new Date(bill.next); end.setDate(end.getDate() - 1);
-    b.textContent = "This billing month: " + fmtD(bill.start) + " – " + fmtD(end);
-    sp.textContent = " · readings to " + fmtD(new Date(data.data_to - 1));
-  } else {
-    b.textContent = "Last " + state.days + " days: " + fmtD(new Date(data.data_from)) + " – " + fmtD(new Date(data.data_to - 1));
-  }
+  b.textContent = "Last " + state.days + " days: " + fmtD(new Date(data.data_from)) + " – " + fmtD(new Date(data.data_to - 1));
   el.append(b, sp); show(el, true);
 }
 

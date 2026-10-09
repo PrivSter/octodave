@@ -14,7 +14,7 @@ Dave's own dashboard for Octopus Energy's **Agile Octopus** tariff, in two versi
 - **Right now**: live watts from the Octopus Home Mini, the current Agile price, cost per hour, and **today so far** (today's Home Mini half-hours priced at each half-hour's Agile rate, plus today's standing charge; refreshed every 5 minutes).
 - **Prices ahead**: the published Agile prices from now on, plus the cheapest 1, 2 or 3-hour window.
 - **This billing month** (from the billing day, 15th by default): cost so far against the same point last month, a forecast for the month (actual so far + 28-day average daily energy cost + standing charge for each day left), a cumulative chart and the workings.
-- **History** (7, 30 or 90 days, or the billing month): usage, cost, average price, the 4–7pm peak, a "shift your peak use" savings slider, the most expensive evenings, a half-hourly heatmap, and what the same usage would have cost on Flexible, Tracker and a 12-month fix.
+- **History** (7, 30 or 90 days): usage, cost, average price, the 4–7pm peak, a "shift your peak use" savings slider, the most expensive evenings, a half-hourly heatmap, and what the same usage would have cost on Flexible, Tracker and a 12-month fix.
 - CSV export of the half-hourly history.
 
 ## Setup details needed

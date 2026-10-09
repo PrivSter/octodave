@@ -33,4 +33,5 @@ Dave, UK, on Agile Octopus with an Octopus Home Mini. Infosec analyst, so keep s
 - 1.6: "Today so far" in the Right now panel (both). First iPhone version, adding Prices ahead and the cheapest window.
 - 1.7: Roadmap section 1. Real device ID removed from help text; device ID format check; out-of-date live readings flagged and priced at the rate when taken; Mac app no longer quits under an open tab and reconnects after a restart; Prices ahead on the Mac; iPhone warns when set up in a Safari tab.
 - 1.8: Mac app runs the code from `~/Code/octodave`, so updates need only Quit and reopen. Footer shows the version and where the code came from.
-- 1.9: Billing month (roadmap 2.1 and 2.2): billing day setting (default 15), Billing month period, and a This billing month panel with cost so far vs last month, an end-of-month forecast, a cumulative chart and the workings. Same `computeForecast()` in both apps.
+- 1.9: Billing month (roadmap 2.1 and 2.2): billing day setting (default 15) and a This billing month panel with cost so far vs last month, an end-of-month forecast, a cumulative chart and the workings. Same `computeForecast()` in both apps.
+- 1.9.2: Removed the Billing month period button (it mostly duplicated the This billing month panel). A heading above the history panels says which days they cover.
