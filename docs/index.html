@@ -149,6 +149,19 @@ form.setup { display: grid; gap: 14px; }
 .row-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 footer.settings { display: grid; gap: 10px; font-size: 0.82rem; color: var(--muted); overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: no-preference) { .bar { transition: width 0.3s ease; } }
+
+/* Billing month */
+.billtiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.billtile { background: var(--surface-2); border-radius: 10px; padding: 10px 12px; display: grid; gap: 2px; align-content: start; min-width: 0; }
+.billtile .label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.billtile .value { font: 650 1.3rem/1.2 var(--font-num); font-variant-numeric: tabular-nums; }
+.billtile .sub { font-size: 0.8rem; color: var(--muted); }
+.billtile .sub.up { color: var(--bad); } .billtile .sub.down { color: var(--good); }
+#billChart svg { display: block; width: 100%; height: auto; min-width: 0; }
+details.workings summary { cursor: pointer; font-weight: 600; font-size: 0.9rem; }
+details.workings dl { display: grid; grid-template-columns: minmax(0, 13em) minmax(0, 1fr); gap: 4px 14px; margin: 10px 0 0; font-size: 0.85rem; }
+details.workings dt { color: var(--muted); } details.workings dd { margin: 0; font-variant-numeric: tabular-nums; }
+@media (max-width: 480px) { details.workings dl { grid-template-columns: 1fr; } details.workings dd { margin-bottom: 6px; } }
 </style>
 </head>
 <body>
@@ -161,6 +174,7 @@ footer.settings { display: grid; gap: 10px; font-size: 0.82rem; color: var(--mut
           <button type="button" data-days="7" aria-pressed="false">7d</button>
           <button type="button" data-days="30" aria-pressed="true">30d</button>
           <button type="button" data-days="90" aria-pressed="false">90d</button>
+          <button type="button" data-days="bill" aria-pressed="false" aria-label="Billing month">Bill</button>
         </div>
         <button type="button" class="btn" id="refreshBtn" aria-label="Refresh">Refresh</button>
       </div>
@@ -195,6 +209,11 @@ footer.settings { display: grid; gap: 10px; font-size: 0.82rem; color: var(--mut
         <label for="f-device">Home Mini device ID <span class="muted">(optional)</span></label>
         <input id="f-device" name="device_id" spellcheck="false" autocapitalize="characters" autocorrect="off" placeholder="00-11-22-33-44-55-66-77">
         <span class="hint">Needed if live readings don't appear. Octo-Aid shows it under Settings › Home Mini Device: 8 pairs like 00-11-22-33-44-55-66-77. It isn't the Wi-Fi address your router lists.</span>
+      </div>
+      <div class="field">
+        <label for="f-billday">Billing month starts on day</label>
+        <input id="f-billday" name="bill_day" type="number" inputmode="numeric" min="1" max="28" step="1" placeholder="15" style="max-width:8em">
+        <span class="hint">The day of the month your Octopus bill runs from. Used for the billing month and forecast.</span>
       </div>
       <div class="notice error" id="setupError" hidden></div>
       <div class="row-actions">
@@ -247,6 +266,17 @@ footer.settings { display: grid; gap: 10px; font-size: 0.82rem; color: var(--mut
       </div>
     </section>
 
+    <section class="panel" aria-labelledby="billTitle">
+      <div class="panel-head">
+        <h2 id="billTitle">This billing month</h2>
+        <span class="muted small" id="billSpan"></span>
+      </div>
+      <div class="billtiles" id="billTiles"><span class="loading">Working out your billing month…</span></div>
+      <div class="legend"><span><i style="background:var(--accent)"></i>This month</span><span><i style="background:var(--peak)"></i>Forecast</span><span><i style="background:var(--muted)"></i>Last month</span></div>
+      <div class="chart" id="billChart"></div>
+      <details class="workings"><summary>How the forecast is worked out</summary><dl id="billWorkings"></dl></details>
+    </section>
+
     <div class="tiles" id="tiles"></div>
 
     <section class="panel" aria-labelledby="peakTitle">
@@ -297,7 +327,7 @@ footer.settings { display: grid; gap: 10px; font-size: 0.82rem; color: var(--mut
         <button type="button" class="btn" id="editBtn">Change details</button>
         <button type="button" class="btn danger" id="forgetBtn">Forget my details</button>
       </span>
-      <span>OctoDave for iPhone 1.8</span>
+      <span>OctoDave for iPhone 1.9</span>
     </footer>
   </div>
 </div>
@@ -310,7 +340,7 @@ footer.settings { display: grid; gap: 10px; font-size: 0.82rem; color: var(--mut
 // your details in this app's local storage. No server, no third parties.
 // ======================================================================
 
-const VERSION = "1.8";
+const VERSION = "1.9";
 const API_HOSTS = ["https://api.octopus.energy", "https://api.oegb-kraken.energy"];
 const STORE = "octodave.v1.";
 const DIST_TO_GSP = { "10": "_A", "11": "_B", "12": "_C", "13": "_D", "14": "_E", "15": "_F", "16": "_G",
@@ -544,6 +574,7 @@ const App = {
       key_hint: k.length > 12 ? k.slice(0, 8) + "…" + k.slice(-4) : (k ? "saved" : ""),
       mpan: this.cfg.mpan || "", serial: this.cfg.serial || "", account: this.cfg.account || "",
       device_id: this.cfg.device_id || "", region: (this.cfg.region || "").replace(/_/g, ""),
+      bill_day: Number(this.cfg.bill_day) || 15,
       live_available: !!(this.cfg.account || this.cfg.device_id),
     };
   },
@@ -565,6 +596,9 @@ const App = {
     if (!serial) throw new ApiError("Enter your electricity meter's serial number.", 400);
     if (account && !/^A-[0-9A-F]{8}$/.test(account)) throw new ApiError("The account number should look like A-1234ABCD.", 400);
     if (device && !DEVICE_ID_RE.test(device)) throw new ApiError(DEVICE_ID_HELP, 400);
+    const billDayIn = String(body.bill_day || "15").trim();
+    const bill_day = /^\d{1,2}$/.test(billDayIn) ? Number(billDayIn) : 0;
+    if (bill_day < 1 || bill_day > 28) throw new ApiError("The billing month should start on a day between 1 and 28.", 400);
 
     const octo = new Octopus(key);
     let region = null;
@@ -582,7 +616,7 @@ const App = {
       if (!mpans.includes(mpan)) throw new ApiError("That account number doesn't include this MPAN.", 400);
     }
 
-    const cfg = { key, mpan, serial, account, device_id: device, region };
+    const cfg = { key, mpan, serial, account, device_id: device, region, bill_day };
     if (!save("config", cfg)) throw new ApiError("This phone wouldn't let the app save your details. If Safari is in Private mode, switch it off and try again.");
     this.cfg = cfg; this.octo = octo;
     this.clearCaches();
@@ -648,19 +682,25 @@ const App = {
   },
   tariffNow() { return this.tariffAt(nowS()); },
 
-  async analysis(days, refresh) {
+  // History from `days` ago, or from local midnight on date `from` (YYYY-MM-DD). compare=false skips
+  // the other-tariff comparison (used by the billing-month forecast).
+  async analysis(days, refresh, from, compare) {
     days = Math.max(1, Math.min(Number(days) || 30, 366));
-    const mem = this.analysisMem[days];
+    if (compare === undefined) compare = true;
+    const key = (from || days) + "|" + compare;
+    const mem = this.analysisMem[key];
     if (mem && !refresh && Date.now() - mem.at < ANALYSIS_TTL) return mem.data;
-    const data = await this.buildAnalysis(days);
-    this.analysisMem[days] = { at: Date.now(), data };
-    save("analysis", { days, at: Date.now(), data });
+    const data = await this.buildAnalysis(days, from, compare);
+    this.analysisMem[key] = { at: Date.now(), data };
+    if (compare) save("analysis", { key, at: Date.now(), data });
     return data;
   },
 
-  async buildAnalysis(days) {
+  async buildAnalysis(days, from, compare) {
     const octo = this.octo, cfg = this.cfg, now = nowS();
-    const start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - days);
+    let start;
+    if (from) { const [y, m, d] = from.split("-").map(Number); start = new Date(y, m - 1, d); }
+    else { start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - days); }
     const tFrom = Math.floor(start.getTime() / 1000);
     const cons = await octo.getAll("/v1/electricity-meter-points/" + cfg.mpan + "/meters/" + cfg.serial + "/consumption/",
       { period_from: isoUtc(tFrom), period_to: isoUtc(now), page_size: 25000, order_by: "period" });
@@ -725,7 +765,7 @@ const App = {
       energy_p: actualEnergy, standing_p: actualStanding, total_p: actualEnergy + actualStanding,
       coverage: 1 - missing / hh.length, actual: true,
     }];
-    const { picks } = pickComparisonProducts(await this.productList());
+    const { picks } = compare ? pickComparisonProducts(await this.productList()) : { picks: [] };
     for (const [label, product] of picks) {
       try {
         const { code, name } = await regionTariffCode(octo, product.code, cfg.region);
@@ -750,7 +790,7 @@ const App = {
       }
     }
     return {
-      generated: Date.now(), days, data_from: t0 * 1000, data_to: t1 * 1000,
+      generated: Date.now(), days, from: from || null, data_from: t0 * 1000, data_to: t1 * 1000,
       region: cfg.region.replace(/_/g, ""), tariff_history: history, tariff_from_account: fromAccount,
       missing_prices: missing, notes, hh, standing_by_day: standingByDay, comparisons,
     };
@@ -904,6 +944,7 @@ function openSetup(editing) {
   $("#keyHint").textContent = editing && s.key_hint ? "A key is saved. Enter a new one only if you've regenerated it." : "";
   $("#f-mpan").value = s.mpan; $("#f-serial").value = s.serial;
   $("#f-account").value = s.account; $("#f-device").value = s.device_id;
+  $("#f-billday").value = s.bill_day;
   show($("#setupCancel"), !!editing);
   setError($("#setupError"), "");
   show($("#setupPanel"), true);
@@ -918,7 +959,7 @@ $("#setupForm").addEventListener("submit", async (ev) => {
   setError($("#setupError"), "");
   try {
     await App.setup({ key: $("#f-key").value, mpan: $("#f-mpan").value, serial: $("#f-serial").value,
-      account: $("#f-account").value, device_id: $("#f-device").value });
+      account: $("#f-account").value, device_id: $("#f-device").value, bill_day: $("#f-billday").value });
     $("#f-key").value = "";
     show($("#setupPanel"), false);
     state.today = null; state.todayAt = 0; state.ahead = null; state.aheadAt = 0;
@@ -948,7 +989,7 @@ $("#forgetBtn").addEventListener("click", () => {
 $("#csvBtn").addEventListener("click", async () => {
   if (!state.data) return;
   const d = new Date(), pad = (n) => String(n).padStart(2, "0");
-  const name = "agile-usage-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "-" + state.days + "d.csv";
+  const name = "agile-usage-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "-" + (state.days === "bill" ? "billing-month" : state.days + "d") + ".csv";
   const file = new File([App.csv(state.data)], name, { type: "text/csv" });
   try {
     if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file] }); return; }
@@ -961,13 +1002,13 @@ $("#csvBtn").addEventListener("click", async () => {
 
 // ---------- period ----------
 document.querySelectorAll("#periodControls .seg button").forEach((b) => b.addEventListener("click", () => {
-  state.days = Number(b.dataset.days);
+  state.days = b.dataset.days === "bill" ? "bill" : Number(b.dataset.days);
   document.querySelectorAll("#periodControls .seg button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
   save("days", state.days);
   loadAnalysis(false);
 }));
 $("#refreshBtn").addEventListener("click", () => {
-  loadAnalysis(true);
+  loadAnalysis(true); loadBill(true);
   state.todayAt = 0; state.aheadAt = 0; App.liveCache = null;
   pollLive(); loadAhead(true);
 });
@@ -980,7 +1021,7 @@ async function loadAnalysis(refresh) {
   if (!state.data || state.data.days !== state.days)
     $("#tiles").innerHTML = '<div class="tile" style="grid-column:1/-1"><span class="loading">Fetching your half-hourly data from Octopus…</span></div>';
   try {
-    state.data = await App.analysis(state.days, refresh);
+    state.data = await App.analysis(state.days === "bill" ? 1 : state.days, refresh, state.days === "bill" ? ymd(billDates(App.status().bill_day).start) : null, true);
     state.analysisAt = Date.now();
     renderAll();
   } catch (e) {
@@ -1196,6 +1237,140 @@ function renderComparison(data, prep) {
   }
 }
 
+// ---------- billing month and forecast (same code in the Mac and iPhone apps) ----------
+const ymd = (d) => d.toLocaleDateString("en-CA");
+const fromKey = (k) => new Date(k + "T12:00:00");
+const dayDiff = (a, b) => Math.round((new Date(b.getFullYear(), b.getMonth(), b.getDate()) -
+  new Date(a.getFullYear(), a.getMonth(), a.getDate())) / 86400000);
+
+// The billing month containing `now`, plus the one before and the start of the next.
+function billDates(billDay, now) {
+  now = now || new Date();
+  const y = now.getFullYear();
+  let m = now.getMonth();
+  if (now.getDate() < billDay) m -= 1;
+  return { prev: new Date(y, m - 1, billDay), start: new Date(y, m, billDay), next: new Date(y, m + 1, billDay) };
+}
+
+// Forecast for the current billing month. Method (as Octo-Aid): actual cost so far, plus the average
+// daily energy cost over the last 28 days with data, plus the standing charge, for each day left.
+function computeForecast(data, bill) {
+  const byDay = new Map();
+  for (const [ms, k, p] of data.hh) {
+    const key = dayKey(new Date(ms));
+    const g = byDay.get(key) || { energy: 0, kwh: 0 };
+    g.energy += k * (p || 0); g.kwh += k;
+    byDay.set(key, g);
+  }
+  const keys = [...byDay.keys()].sort();
+  if (!keys.length) return null;
+  const st = (k) => data.standing_by_day[k] || 0;
+  const cost = (k) => byDay.get(k).energy + st(k);
+  const startK = ymd(bill.start), nextK = ymd(bill.next), prevK = ymd(bill.prev);
+  const cur = keys.filter((k) => k >= startK && k < nextK);
+  const last = keys.filter((k) => k >= prevK && k < startK);
+  const totalDays = dayDiff(bill.start, bill.next), lastLen = dayDiff(bill.prev, bill.start);
+  const lastKey = keys[keys.length - 1];
+  const covered = cur.length ? dayDiff(bill.start, fromKey(cur[cur.length - 1])) + 1 : 0;
+  const remaining = Math.max(0, totalDays - covered);
+  const actual = cur.reduce((a, k) => a + cost(k), 0);
+  const actualKwh = cur.reduce((a, k) => a + byDay.get(k).kwh, 0);
+  const lastDate = fromKey(lastKey);
+  const win = keys.filter((k) => dayDiff(fromKey(k), lastDate) < 28);
+  const avgEnergy = win.reduce((a, k) => a + byDay.get(k).energy, 0) / win.length;
+  const standingDay = st(lastKey);
+  const projected = actual + remaining * (avgEnergy + standingDay);
+  const lastTotal = last.reduce((a, k) => a + cost(k), 0);
+  const lastComplete = last.length >= lastLen - 1;
+  const lastSamePoint = last.filter((k) => dayDiff(bill.prev, fromKey(k)) < covered).reduce((a, k) => a + cost(k), 0);
+  const series = (list, from) => { let c = 0; return list.map((k) => { c += cost(k); return [dayDiff(from, fromKey(k)) + 1, c]; }); };
+  return { totalDays, lastLen, covered, remaining, actual, actualKwh, avgEnergy, winDays: win.length,
+    winFrom: win[0], winTo: lastKey, standingDay, projected, lastTotal, lastComplete, lastSamePoint,
+    lastDays: last.length, lastKey, cur: series(cur, bill.start), lastSeries: series(last, bill.prev) };
+}
+
+function renderForecast(f, bill) {
+  const fmt = (d) => d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  const endD = new Date(bill.next); endD.setDate(endD.getDate() - 1);
+  $("#billSpan").textContent = fmt(bill.start) + " – " + fmt(endD) + (f ? " · readings to " + fmt(fromKey(f.lastKey)) : "");
+  const tiles = $("#billTiles"); tiles.replaceChildren();
+  const tile = (label, value, sub, subCls) => {
+    const t = document.createElement("div"); t.className = "billtile";
+    t.innerHTML = '<span class="label"></span><span class="value"></span><span class="sub"></span>';
+    t.children[0].textContent = label; t.children[1].textContent = value; t.children[2].textContent = sub || "";
+    if (subCls) t.children[2].classList.add(subCls);
+    tiles.appendChild(t);
+  };
+  if (!f || !f.cur.length) {
+    tile("So far", "£0.00", "No readings for this billing month yet. They arrive a day late.");
+    $("#billChart").replaceChildren(); $("#billWorkings").replaceChildren();
+    if (!f) return;
+  }
+  const diff = (d, what) => (Math.abs(d) < 0.5 ? "Same as " + what : pounds(Math.abs(d)) + (d > 0 ? " higher than " : " lower than ") + what);
+  if (f.cur.length) {
+    tile("So far", pounds(f.actual), f.actualKwh.toFixed(0) + " kWh" + (f.lastComplete && f.covered ?
+      ". " + diff(f.actual - f.lastSamePoint, "this point last month") : ""), f.lastComplete && f.covered ? (f.actual > f.lastSamePoint ? "up" : "down") : "");
+  }
+  tile("Forecast", pounds(f.projected), f.lastComplete && f.lastTotal > 0 ?
+    diff(f.projected - f.lastTotal, "last month") + " (" + pounds(f.lastTotal) + ")" : "Not enough of last month to compare",
+    f.lastComplete && f.lastTotal > 0 ? (f.projected > f.lastTotal ? "up" : "down") : "");
+  tile("Days left", String(f.remaining), "Billing month ends " + fmt(endD));
+
+  // Cumulative cost through the billing month: last month, this month so far, and the projection.
+  const box = $("#billChart");
+  const L = 46, R = 10, T = 10, B = 24, H = 190;
+  const W = Math.max(300, Math.floor(box.clientWidth || 600));
+  const maxX = Math.max(f.totalDays, f.lastLen);
+  const top = Math.max(f.projected, f.lastTotal, 1);
+  const step = niceMax(top / 4), maxY = step * Math.ceil(top / step);
+  const x = (d) => L + (W - L - R) * (d / maxX), y = (p) => T + (H - T - B) * (1 - p / maxY);
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": "Cumulative cost through the billing month" });
+  for (let v = 0; v <= maxY + 1e-9; v += step) {
+    svg.appendChild(svgEl("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: "var(--line)", "stroke-width": 1 }));
+    const t = svgEl("text", { x: L - 5, y: y(v) + 4, "text-anchor": "end" }); t.textContent = "£" + Math.round(v / 100); svg.appendChild(t);
+  }
+  const every = maxX > 20 ? 7 : 5;
+  for (let d = 0; d <= maxX; d += every) {
+    const dt = new Date(bill.start); dt.setDate(dt.getDate() + d);
+    const t = svgEl("text", { x: x(d), y: H - 7, "text-anchor": "middle" }); t.textContent = fmt(dt); svg.appendChild(t);
+  }
+  const line = (pts, attrs) => svg.appendChild(svgEl("polyline", Object.assign({ points: pts.map(([d, c]) => x(d).toFixed(1) + "," + y(c).toFixed(1)).join(" "), fill: "none", "stroke-linejoin": "round", "stroke-linecap": "round" }, attrs)));
+  if (f.lastSeries.length) line([[0, 0], ...f.lastSeries], { stroke: "var(--muted)", "stroke-width": 2, "stroke-dasharray": "5 4" });
+  if (f.cur.length) line([[0, 0], ...f.cur], { stroke: "var(--accent)", "stroke-width": 2.5 });
+  if (f.remaining) line([[f.covered, f.actual], [f.totalDays, f.projected]], { stroke: "var(--peak)", "stroke-width": 2, "stroke-dasharray": "5 4" });
+  const dot = svgEl("circle", { cx: x(f.totalDays), cy: y(f.projected), r: 3.5, fill: "var(--peak)" }); svg.appendChild(dot);
+  box.replaceChildren(svg);
+
+  const rows = [
+    ["Method", "Actual so far, plus the average daily energy cost over the last 28 days with readings, plus the standing charge, for each day left"],
+    ["Readings used for the average", f.winDays + " days, " + fmt(fromKey(f.winFrom)) + " to " + fmt(fromKey(f.winTo))],
+    ["Average daily energy cost", pounds(f.avgEnergy) + " (before standing charge)"],
+    ["Standing charge", pence(f.standingDay) + " a day"],
+    ["Actual so far", pounds(f.actual) + " over " + f.covered + " day" + (f.covered === 1 ? "" : "s")],
+    ["Days left", f.remaining + " × " + pounds(f.avgEnergy + f.standingDay) + " = " + pounds(f.remaining * (f.avgEnergy + f.standingDay))],
+    ["Forecast", pounds(f.projected)],
+    ["Last billing month", f.lastComplete ? pounds(f.lastTotal) + " over " + f.lastDays + " days" : "Only " + f.lastDays + " days of readings"],
+    ["Not included", "Today, until Octopus's settled readings arrive tomorrow"],
+  ];
+  const dl = $("#billWorkings"); dl.replaceChildren();
+  for (const [k, v] of rows) {
+    const dt = document.createElement("dt"); dt.textContent = k;
+    const dd = document.createElement("dd"); dd.textContent = v;
+    dl.append(dt, dd);
+  }
+}
+
+async function loadBill(refresh) {
+  const bill = billDates(App.status().bill_day);
+  try {
+    const data = await App.analysis(1, refresh, ymd(bill.prev), false);
+    renderForecast(computeForecast(data, bill), bill);
+  } catch (e) {
+    $("#billTiles").replaceChildren();
+    const p = document.createElement("p"); p.className = "muted small"; p.textContent = e.message; $("#billTiles").appendChild(p);
+  }
+}
+
 // ---------- prices ahead ----------
 async function loadAhead(force) {
   if (!force && state.ahead && Date.now() - state.aheadAt < AHEAD_EVERY_MS) { renderAhead(); return; }
@@ -1371,6 +1546,7 @@ document.addEventListener("visibilitychange", () => {
   if (document.hidden || !App.configured()) return;
   if (state.live) pollLive();
   loadAhead(false);
+  loadBill(false);
   if (Date.now() - state.analysisAt > ANALYSIS_TTL) loadAnalysis(false);
 });
 let resizeTimer = null;
@@ -1386,20 +1562,22 @@ function startDashboard(fresh) {
   updateLiveToggle();
   // Show the last analysis straight away while a fresh one loads.
   const cached = load("analysis", null);
-  if (!fresh && cached && cached.days === state.days && cached.data) {
+  const wantKey = (state.days === "bill" ? ymd(billDates(App.status().bill_day).start) : state.days) + "|true";
+  if (!fresh && cached && cached.key === wantKey && cached.data) {
     state.data = cached.data;
-    App.analysisMem[state.days] = { at: cached.at, data: cached.data };
+    App.analysisMem[wantKey] = { at: cached.at, data: cached.data };
     renderAll();
   }
   loadAnalysis(!!fresh);
   loadAhead(true);
+  loadBill(!!fresh);
   startLive();
 }
 
 (function init() {
-  state.days = [7, 30, 90].includes(load("days", 30)) ? load("days", 30) : 30;
+  state.days = [7, 30, 90, "bill"].includes(load("days", 30)) ? load("days", 30) : 30;
   state.win = [2, 4, 6].includes(load("win", 4)) ? load("win", 4) : 4;
-  document.querySelectorAll("#periodControls .seg button").forEach((x) => x.setAttribute("aria-pressed", String(Number(x.dataset.days) === state.days)));
+  document.querySelectorAll("#periodControls .seg button").forEach((x) => x.setAttribute("aria-pressed", String((x.dataset.days === "bill" ? "bill" : Number(x.dataset.days)) === state.days)));
   document.querySelectorAll(".best .seg button").forEach((x) => x.setAttribute("aria-pressed", String(Number(x.dataset.win) === state.win)));
   App.init();
   if (App.configured()) startDashboard(false);

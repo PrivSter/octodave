@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.8"
+VERSION = "1.9"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -525,6 +525,7 @@ class App:
             "serial": self.cfg.get("serial", ""),
             "account": self.cfg.get("account", ""),
             "device_id": self.cfg.get("device_id", ""),
+            "bill_day": int(self.cfg.get("bill_day") or 15),
             "region": (self.cfg.get("region") or "").strip("_"),
             "host": self.octo.host if self.octo else None,
             "live_available": bool(self.cfg.get("account") or self.cfg.get("device_id")),
@@ -551,6 +552,12 @@ class App:
             raise ApiError("The account number should look like A-1234ABCD.", 400)
         if device and not DEVICE_ID_RE.fullmatch(device):
             raise ApiError(DEVICE_ID_HELP, 400)
+        try:
+            bill_day = int(str(body.get("bill_day") or "15").strip())
+        except ValueError:
+            bill_day = 0
+        if not 1 <= bill_day <= 28:
+            raise ApiError("The billing month should start on a day between 1 and 28.", 400)
 
         octo = Octopus(key)
         region = None
@@ -576,7 +583,8 @@ class App:
                 raise ApiError("That account number doesn't include this MPAN.", 400)
 
         self.keystore.set(key)
-        cfg = {"mpan": mpan, "serial": serial, "account": account, "device_id": device, "region": region}
+        cfg = {"mpan": mpan, "serial": serial, "account": account, "device_id": device, "region": region,
+               "bill_day": bill_day}
         save_config(cfg)
         with self.lock:
             self.cfg = cfg
@@ -644,21 +652,36 @@ class App:
 
     # -- analysis -------------------------------------------------------------
 
-    def analysis(self, days, refresh=False):
+    def analysis(self, days, refresh=False, frm=None, compare=True):
+        """History from `days` ago, or from local midnight on date `frm` (YYYY-MM-DD) when given.
+        compare=False skips the other-tariff comparison (used by the billing-month forecast)."""
         days = max(1, min(int(days), 366))
+        if frm:
+            try:
+                start = datetime.strptime(frm, "%Y-%m-%d")
+            except ValueError:
+                raise ApiError("That start date isn't valid.", 400)
+            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            days = (today - start).days
+            if not 0 <= days <= 400:
+                raise ApiError("That start date is out of range.", 400)
+        key = (frm or days, bool(compare))
         with self.lock:
-            hit = self.analysis_cache.get(days)
+            hit = self.analysis_cache.get(key)
         if hit and not refresh and time.time() - hit[0] < ANALYSIS_TTL:
             return hit[1]
-        data = self._build_analysis(days)
+        data = self._build_analysis(days, frm, compare)
         with self.lock:
-            self.analysis_cache[days] = (time.time(), data)
+            self.analysis_cache[key] = (time.time(), data)
         return data
 
-    def _build_analysis(self, days):
+    def _build_analysis(self, days, frm=None, compare=True):
         octo, cfg = self.octo, self.cfg
         now = time.time()
-        start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days)
+        if frm:
+            start = datetime.strptime(frm, "%Y-%m-%d")
+        else:
+            start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days)
         t_from = int(start.timestamp())
 
         cons = octo.get_all(
@@ -747,7 +770,7 @@ class App:
             "actual": True,
         }]
 
-        picks, _ = pick_comparison_products(self.products())
+        picks, _ = pick_comparison_products(self.products()) if compare else ([], None)
         for label, product in picks:
             try:
                 code, full_name = region_tariff_code(octo, product["code"], cfg["region"])
@@ -778,6 +801,7 @@ class App:
         return {
             "generated": int(now * 1000),
             "days": days,
+            "from": frm,
             "data_from": t0 * 1000,
             "data_to": t1 * 1000,
             "region": cfg["region"].strip("_"),
@@ -977,8 +1001,8 @@ class App:
 
     # -- CSV ----------------------------------------------------------------------
 
-    def csv(self, days):
-        data = self.analysis(days)
+    def csv(self, days, frm=None):
+        data = self.analysis(days, frm=frm)
         lines = ["interval_start_local,kwh,unit_rate_p_per_kwh,cost_p"]
         for ms, kwh, p in data["hh"]:
             ts = datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M")
@@ -1073,9 +1097,11 @@ class Handler(BaseHTTPRequestHandler):
             if not APP.configured():
                 return self._json(400, {"error": "Set up your details first.", "code": "not_configured"})
             days = int((query.get("days") or ["30"])[0])
+            frm = (query.get("from") or [None])[0]
             if path == "/api/analysis":
                 refresh = (query.get("refresh") or ["0"])[0] == "1"
-                return self._json(200, APP.analysis(days, refresh))
+                compare = (query.get("compare") or ["1"])[0] != "0"
+                return self._json(200, APP.analysis(days, refresh, frm, compare))
             if path == "/api/live":
                 return self._json(200, APP.live())
             if path == "/api/today":
@@ -1083,8 +1109,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/ahead":
                 return self._json(200, APP.ahead())
             if path == "/api/export.csv":
-                body = APP.csv(days)
-                name = "agile-usage-%s-%dd.csv" % (datetime.now().strftime("%Y%m%d"), days)
+                body = APP.csv(days, frm)
+                name = "agile-usage-%s-%s.csv" % (datetime.now().strftime("%Y%m%d"),
+                                                  ("from-" + frm) if frm else "%dd" % days)
                 return self._send(200, body, "text/csv; charset=utf-8",
                                   {"Content-Disposition": 'attachment; filename="%s"' % name})
             return self._json(404, {"error": "Unknown request."})
@@ -1249,6 +1276,19 @@ form.setup { display: grid; gap: 14px; max-width: 560px; }
 footer.settings { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: center; justify-content: space-between; font-size: 0.85rem; color: var(--muted); }
 .loading { color: var(--muted); font-style: italic; }
 @media (prefers-reduced-motion: no-preference) { .bar { transition: width 0.3s ease; } }
+
+/* Billing month */
+.billtiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.billtile { background: var(--surface-2); border-radius: 10px; padding: 10px 12px; display: grid; gap: 2px; align-content: start; min-width: 0; }
+.billtile .label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.billtile .value { font: 650 1.3rem/1.2 var(--font-num); font-variant-numeric: tabular-nums; }
+.billtile .sub { font-size: 0.8rem; color: var(--muted); }
+.billtile .sub.up { color: var(--bad); } .billtile .sub.down { color: var(--good); }
+#billChart svg { display: block; width: 100%; height: auto; min-width: 0; }
+details.workings summary { cursor: pointer; font-weight: 600; font-size: 0.9rem; }
+details.workings dl { display: grid; grid-template-columns: minmax(0, 13em) minmax(0, 1fr); gap: 4px 14px; margin: 10px 0 0; font-size: 0.85rem; }
+details.workings dt { color: var(--muted); } details.workings dd { margin: 0; font-variant-numeric: tabular-nums; }
+@media (max-width: 480px) { details.workings dl { grid-template-columns: 1fr; } details.workings dd { margin-bottom: 6px; } }
 </style>
 </head>
 <body>
@@ -1263,6 +1303,7 @@ footer.settings { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: ce
         <button type="button" data-days="7" aria-pressed="false">7 days</button>
         <button type="button" data-days="30" aria-pressed="true">30 days</button>
         <button type="button" data-days="90" aria-pressed="false">90 days</button>
+        <button type="button" data-days="bill" aria-pressed="false">Billing month</button>
       </div>
       <button type="button" class="btn" id="refreshBtn">Refresh</button>
     </div>
@@ -1294,6 +1335,11 @@ footer.settings { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: ce
         <label for="f-device">Home Mini device ID <span class="muted">(optional)</span></label>
         <input id="f-device" name="device_id" spellcheck="false" placeholder="00-11-22-33-44-55-66-77">
         <span class="hint">Needed if live readings don't appear. Octo-Aid shows it under Settings &rsaquo; Home Mini Device: 8 pairs like 00-11-22-33-44-55-66-77. It isn't the Wi-Fi address your router lists.</span>
+      </div>
+      <div class="field">
+        <label for="f-billday">Billing month starts on day</label>
+        <input id="f-billday" name="bill_day" type="number" inputmode="numeric" min="1" max="28" step="1" placeholder="15" style="max-width:8em">
+        <span class="hint">The day of the month your Octopus bill runs from. Used for the billing month and forecast.</span>
       </div>
       <div class="notice error" id="setupError" hidden></div>
       <div class="row-actions">
@@ -1339,6 +1385,17 @@ footer.settings { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: ce
         <p class="big" id="bestWindow">–</p>
         <p class="muted small" id="bestNote"></p>
       </div>
+    </section>
+
+    <section class="panel" aria-labelledby="billTitle">
+      <div class="panel-head">
+        <h2 id="billTitle">This billing month</h2>
+        <span class="muted small" id="billSpan"></span>
+      </div>
+      <div class="billtiles" id="billTiles"><span class="loading">Working out your billing month…</span></div>
+      <div class="legend"><span><i style="background:var(--accent)"></i>This month</span><span><i style="background:var(--peak)"></i>Forecast</span><span><i style="background:var(--muted)"></i>Last month</span></div>
+      <div class="chart" id="billChart"></div>
+      <details class="workings"><summary>How the forecast is worked out</summary><dl id="billWorkings"></dl></details>
     </section>
 
     <div class="tiles" id="tiles"></div>
@@ -1471,6 +1528,7 @@ function openSetup(editing) {
   $("#f-serial").value = s.serial || "";
   $("#f-account").value = s.account || "";
   $("#f-device").value = s.device_id || "";
+  $("#f-billday").value = s.bill_day || 15;
   show($("#setupCancel"), !!editing);
   setError($("#setupError"), "");
   show($("#setupPanel"), true);
@@ -1486,7 +1544,7 @@ $("#setupForm").addEventListener("submit", async (ev) => {
   try {
     const body = {
       key: $("#f-key").value.trim(), mpan: $("#f-mpan").value, serial: $("#f-serial").value,
-      account: $("#f-account").value, device_id: $("#f-device").value,
+      account: $("#f-account").value, device_id: $("#f-device").value, bill_day: $("#f-billday").value,
     };
     state.status = await api("/api/setup", { method: "POST", body: JSON.stringify(body) });
     $("#f-key").value = "";
@@ -1524,25 +1582,39 @@ $("#quitBtn").addEventListener("click", async () => {
   wrap.innerHTML = '<header class="top"><div><h1>OctoDave</h1><p class="sub muted small">Stopped. You can close this tab, and open OctoDave again whenever you want it.</p></div></header>';
 });
 $("#csvBtn").addEventListener("click", () => {
-  window.location.href = "/api/export.csv?days=" + state.days + "&t=" + encodeURIComponent(TOKEN);
+  window.location.href = "/api/export.csv?" + periodQuery() + "&t=" + encodeURIComponent(TOKEN);
 });
 
 // ---------- period ----------
 document.querySelectorAll("#periodControls .seg button").forEach((b) => b.addEventListener("click", () => {
-  state.days = Number(b.dataset.days);
+  state.days = b.dataset.days === "bill" ? "bill" : Number(b.dataset.days);
   document.querySelectorAll("#periodControls .seg button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
   loadAnalysis(false);
 }));
-$("#refreshBtn").addEventListener("click", () => { loadAnalysis(true); loadAhead(true); });
+$("#refreshBtn").addEventListener("click", () => { loadAnalysis(true); loadAhead(true); loadBill(true); });
 
 // ---------- analysis ----------
+const billDay = () => (state.status && state.status.bill_day) || 15;
+function periodQuery() {
+  return state.days === "bill" ? "days=1&from=" + ymd(billDates(billDay()).start) : "days=" + state.days;
+}
+async function loadBill(refresh) {
+  const bill = billDates(billDay());
+  try {
+    const data = await api("/api/analysis?days=1&compare=0&from=" + ymd(bill.prev) + (refresh ? "&refresh=1" : ""));
+    renderForecast(computeForecast(data, bill), bill);
+  } catch (e) {
+    $("#billTiles").replaceChildren();
+    const p = document.createElement("p"); p.className = "muted small"; p.textContent = e.message; $("#billTiles").appendChild(p);
+  }
+}
 async function loadAnalysis(refresh) {
   setError($("#dashError"), "");
   show($("#dashNote"), false);
   $("#tiles").innerHTML = '<div class="tile"><span class="loading">Fetching your half-hourly data from Octopus…</span></div>';
   $("#refreshBtn").disabled = true;
   try {
-    state.data = await api("/api/analysis?days=" + state.days + (refresh ? "&refresh=1" : ""));
+    state.data = await api("/api/analysis?" + periodQuery() + (refresh ? "&refresh=1" : ""));
     renderAll();
   } catch (e) {
     $("#tiles").innerHTML = "";
@@ -1856,7 +1928,131 @@ document.addEventListener("visibilitychange", () => {
   api("/api/ping").catch(() => {}); // tell the app this tab is still in use as soon as it's looked at
   if (state.live) pollLive();
   loadAhead(false);
+  loadBill(false);
 });
+
+// ---------- billing month and forecast (same code in the Mac and iPhone apps) ----------
+const ymd = (d) => d.toLocaleDateString("en-CA");
+const fromKey = (k) => new Date(k + "T12:00:00");
+const dayDiff = (a, b) => Math.round((new Date(b.getFullYear(), b.getMonth(), b.getDate()) -
+  new Date(a.getFullYear(), a.getMonth(), a.getDate())) / 86400000);
+
+// The billing month containing `now`, plus the one before and the start of the next.
+function billDates(billDay, now) {
+  now = now || new Date();
+  const y = now.getFullYear();
+  let m = now.getMonth();
+  if (now.getDate() < billDay) m -= 1;
+  return { prev: new Date(y, m - 1, billDay), start: new Date(y, m, billDay), next: new Date(y, m + 1, billDay) };
+}
+
+// Forecast for the current billing month. Method (as Octo-Aid): actual cost so far, plus the average
+// daily energy cost over the last 28 days with data, plus the standing charge, for each day left.
+function computeForecast(data, bill) {
+  const byDay = new Map();
+  for (const [ms, k, p] of data.hh) {
+    const key = dayKey(new Date(ms));
+    const g = byDay.get(key) || { energy: 0, kwh: 0 };
+    g.energy += k * (p || 0); g.kwh += k;
+    byDay.set(key, g);
+  }
+  const keys = [...byDay.keys()].sort();
+  if (!keys.length) return null;
+  const st = (k) => data.standing_by_day[k] || 0;
+  const cost = (k) => byDay.get(k).energy + st(k);
+  const startK = ymd(bill.start), nextK = ymd(bill.next), prevK = ymd(bill.prev);
+  const cur = keys.filter((k) => k >= startK && k < nextK);
+  const last = keys.filter((k) => k >= prevK && k < startK);
+  const totalDays = dayDiff(bill.start, bill.next), lastLen = dayDiff(bill.prev, bill.start);
+  const lastKey = keys[keys.length - 1];
+  const covered = cur.length ? dayDiff(bill.start, fromKey(cur[cur.length - 1])) + 1 : 0;
+  const remaining = Math.max(0, totalDays - covered);
+  const actual = cur.reduce((a, k) => a + cost(k), 0);
+  const actualKwh = cur.reduce((a, k) => a + byDay.get(k).kwh, 0);
+  const lastDate = fromKey(lastKey);
+  const win = keys.filter((k) => dayDiff(fromKey(k), lastDate) < 28);
+  const avgEnergy = win.reduce((a, k) => a + byDay.get(k).energy, 0) / win.length;
+  const standingDay = st(lastKey);
+  const projected = actual + remaining * (avgEnergy + standingDay);
+  const lastTotal = last.reduce((a, k) => a + cost(k), 0);
+  const lastComplete = last.length >= lastLen - 1;
+  const lastSamePoint = last.filter((k) => dayDiff(bill.prev, fromKey(k)) < covered).reduce((a, k) => a + cost(k), 0);
+  const series = (list, from) => { let c = 0; return list.map((k) => { c += cost(k); return [dayDiff(from, fromKey(k)) + 1, c]; }); };
+  return { totalDays, lastLen, covered, remaining, actual, actualKwh, avgEnergy, winDays: win.length,
+    winFrom: win[0], winTo: lastKey, standingDay, projected, lastTotal, lastComplete, lastSamePoint,
+    lastDays: last.length, lastKey, cur: series(cur, bill.start), lastSeries: series(last, bill.prev) };
+}
+
+function renderForecast(f, bill) {
+  const fmt = (d) => d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  const endD = new Date(bill.next); endD.setDate(endD.getDate() - 1);
+  $("#billSpan").textContent = fmt(bill.start) + " – " + fmt(endD) + (f ? " · readings to " + fmt(fromKey(f.lastKey)) : "");
+  const tiles = $("#billTiles"); tiles.replaceChildren();
+  const tile = (label, value, sub, subCls) => {
+    const t = document.createElement("div"); t.className = "billtile";
+    t.innerHTML = '<span class="label"></span><span class="value"></span><span class="sub"></span>';
+    t.children[0].textContent = label; t.children[1].textContent = value; t.children[2].textContent = sub || "";
+    if (subCls) t.children[2].classList.add(subCls);
+    tiles.appendChild(t);
+  };
+  if (!f || !f.cur.length) {
+    tile("So far", "£0.00", "No readings for this billing month yet. They arrive a day late.");
+    $("#billChart").replaceChildren(); $("#billWorkings").replaceChildren();
+    if (!f) return;
+  }
+  const diff = (d, what) => (Math.abs(d) < 0.5 ? "Same as " + what : pounds(Math.abs(d)) + (d > 0 ? " higher than " : " lower than ") + what);
+  if (f.cur.length) {
+    tile("So far", pounds(f.actual), f.actualKwh.toFixed(0) + " kWh" + (f.lastComplete && f.covered ?
+      ". " + diff(f.actual - f.lastSamePoint, "this point last month") : ""), f.lastComplete && f.covered ? (f.actual > f.lastSamePoint ? "up" : "down") : "");
+  }
+  tile("Forecast", pounds(f.projected), f.lastComplete && f.lastTotal > 0 ?
+    diff(f.projected - f.lastTotal, "last month") + " (" + pounds(f.lastTotal) + ")" : "Not enough of last month to compare",
+    f.lastComplete && f.lastTotal > 0 ? (f.projected > f.lastTotal ? "up" : "down") : "");
+  tile("Days left", String(f.remaining), "Billing month ends " + fmt(endD));
+
+  // Cumulative cost through the billing month: last month, this month so far, and the projection.
+  const box = $("#billChart");
+  const L = 46, R = 10, T = 10, B = 24, H = 190;
+  const W = Math.max(300, Math.floor(box.clientWidth || 600));
+  const maxX = Math.max(f.totalDays, f.lastLen);
+  const top = Math.max(f.projected, f.lastTotal, 1);
+  const step = niceMax(top / 4), maxY = step * Math.ceil(top / step);
+  const x = (d) => L + (W - L - R) * (d / maxX), y = (p) => T + (H - T - B) * (1 - p / maxY);
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": "Cumulative cost through the billing month" });
+  for (let v = 0; v <= maxY + 1e-9; v += step) {
+    svg.appendChild(svgEl("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: "var(--line)", "stroke-width": 1 }));
+    const t = svgEl("text", { x: L - 5, y: y(v) + 4, "text-anchor": "end" }); t.textContent = "£" + Math.round(v / 100); svg.appendChild(t);
+  }
+  const every = maxX > 20 ? 7 : 5;
+  for (let d = 0; d <= maxX; d += every) {
+    const dt = new Date(bill.start); dt.setDate(dt.getDate() + d);
+    const t = svgEl("text", { x: x(d), y: H - 7, "text-anchor": "middle" }); t.textContent = fmt(dt); svg.appendChild(t);
+  }
+  const line = (pts, attrs) => svg.appendChild(svgEl("polyline", Object.assign({ points: pts.map(([d, c]) => x(d).toFixed(1) + "," + y(c).toFixed(1)).join(" "), fill: "none", "stroke-linejoin": "round", "stroke-linecap": "round" }, attrs)));
+  if (f.lastSeries.length) line([[0, 0], ...f.lastSeries], { stroke: "var(--muted)", "stroke-width": 2, "stroke-dasharray": "5 4" });
+  if (f.cur.length) line([[0, 0], ...f.cur], { stroke: "var(--accent)", "stroke-width": 2.5 });
+  if (f.remaining) line([[f.covered, f.actual], [f.totalDays, f.projected]], { stroke: "var(--peak)", "stroke-width": 2, "stroke-dasharray": "5 4" });
+  const dot = svgEl("circle", { cx: x(f.totalDays), cy: y(f.projected), r: 3.5, fill: "var(--peak)" }); svg.appendChild(dot);
+  box.replaceChildren(svg);
+
+  const rows = [
+    ["Method", "Actual so far, plus the average daily energy cost over the last 28 days with readings, plus the standing charge, for each day left"],
+    ["Readings used for the average", f.winDays + " days, " + fmt(fromKey(f.winFrom)) + " to " + fmt(fromKey(f.winTo))],
+    ["Average daily energy cost", pounds(f.avgEnergy) + " (before standing charge)"],
+    ["Standing charge", pence(f.standingDay) + " a day"],
+    ["Actual so far", pounds(f.actual) + " over " + f.covered + " day" + (f.covered === 1 ? "" : "s")],
+    ["Days left", f.remaining + " × " + pounds(f.avgEnergy + f.standingDay) + " = " + pounds(f.remaining * (f.avgEnergy + f.standingDay))],
+    ["Forecast", pounds(f.projected)],
+    ["Last billing month", f.lastComplete ? pounds(f.lastTotal) + " over " + f.lastDays + " days" : "Only " + f.lastDays + " days of readings"],
+    ["Not included", "Today, until Octopus's settled readings arrive tomorrow"],
+  ];
+  const dl = $("#billWorkings"); dl.replaceChildren();
+  for (const [k, v] of rows) {
+    const dt = document.createElement("dt"); dt.textContent = k;
+    const dd = document.createElement("dd"); dd.textContent = v;
+    dl.append(dt, dd);
+  }
+}
 
 // ---------- prices ahead (same as the iPhone app) ----------
 const CHEAP_P = 15, AHEAD_EVERY_MS = 15 * 60000;
@@ -1964,6 +2160,7 @@ function startDashboard(fresh) {
   updateLiveToggle();
   loadAnalysis(!!fresh);
   loadAhead(true);
+  loadBill(!!fresh);
   startLive();
 }
 
