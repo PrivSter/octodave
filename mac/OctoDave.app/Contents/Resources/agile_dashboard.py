@@ -56,6 +56,13 @@ KEY_FILE = os.path.join(CONFIG_DIR, "api-key")  # only used when Keychain isn't 
 KEYCHAIN_SERVICE = "agile-dashboard-octopus-api-key"
 KEYCHAIN_ACCOUNT = "agile-dashboard"
 
+# A Home Mini device ID: 8 pairs of hex digits joined by dashes, e.g. 00-11-22-33-44-55-66-77.
+# It is not the Wi-Fi MAC address the router shows for the Home Mini.
+DEVICE_ID_RE = re.compile(r"(?:[0-9A-F]{2}-){7}[0-9A-F]{2}")
+DEVICE_ID_HELP = ("The Home Mini device ID should be 8 pairs of letters and numbers joined by dashes, "
+                  "like 00-11-22-33-44-55-66-77. Octo-Aid shows it under Settings > Home Mini Device. "
+                  "It isn't the Wi-Fi address your router lists for the Home Mini.")
+
 # Distributor ID (first two digits of the MPAN) to Octopus region letter.
 DIST_TO_GSP = {
     "10": "_A", "11": "_B", "12": "_C", "13": "_D", "14": "_E", "15": "_F",
@@ -525,7 +532,7 @@ class App:
         mpan = re.sub(r"\s", "", body.get("mpan") or "")
         serial = re.sub(r"\s", "", body.get("serial") or "").upper()
         account = re.sub(r"\s", "", body.get("account") or "").upper()
-        device = (body.get("device_id") or "").strip().upper()
+        device = re.sub(r"[\s:]", "-", (body.get("device_id") or "").strip()).upper()
 
         if not key:
             raise ApiError("Enter your API key.", 400)
@@ -537,6 +544,8 @@ class App:
             raise ApiError("Enter your electricity meter's serial number.", 400)
         if account and not re.fullmatch(r"A-[0-9A-F]{8}", account):
             raise ApiError("The account number should look like A-1234ABCD.", 400)
+        if device and not DEVICE_ID_RE.fullmatch(device):
+            raise ApiError(DEVICE_ID_HELP, 400)
 
         octo = Octopus(key)
         region = None
@@ -800,6 +809,14 @@ class App:
                            "Device (it looks like 00-11-22-33-44-55-66-77).", 404, "no_device")
         return ids
 
+    def _device_error(self, e):
+        """Octopus answers 'Unauthorized' when the device isn't linked to this key's account."""
+        if self.cfg.get("device_id") and "unauthori" in str(e).lower():
+            return ApiError("Octopus won't give readings for Home Mini %s with this API key, so it probably "
+                            "isn't the right device ID. Check it under Change details. %s"
+                            % (self.cfg["device_id"], DEVICE_ID_HELP), 403, "device_refused")
+        return e
+
     def _current_rate(self):
         now = int(time.time())
         slot = now - now % 1800
@@ -836,7 +853,8 @@ class App:
                     save_config(self.cfg)
                 break
         if reading is None:
-            raise last_error or ApiError("No live reading from your Home Mini right now.", 404, "no_reading")
+            raise (self._device_error(last_error) if last_error else
+                   ApiError("No live reading from your Home Mini right now.", 404, "no_reading"))
         demand = float(reading.get("demand") or 0)
         try:
             rate = self._current_rate()
@@ -885,7 +903,8 @@ class App:
             if rows:
                 break
         if not rows:
-            raise last_error or ApiError("Your Home Mini hasn't sent any readings for today yet.", 404, "no_reading")
+            raise (self._device_error(last_error) if last_error else
+                   ApiError("Your Home Mini hasn't sent any readings for today yet.", 404, "no_reading"))
         parsed = []
         for r in rows:
             if not r.get("readAt"):
@@ -1221,8 +1240,8 @@ footer.settings { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: ce
       </div>
       <div class="field">
         <label for="f-device">Home Mini device ID <span class="muted">(optional)</span></label>
-        <input id="f-device" name="device_id" spellcheck="false" placeholder="Found automatically from your account">
-        <span class="hint">Only needed if live readings don't appear. Octo-Aid shows it under Settings &rsaquo; Home Mini Device.</span>
+        <input id="f-device" name="device_id" spellcheck="false" placeholder="00-11-22-33-44-55-66-77">
+        <span class="hint">Needed if live readings don't appear. Octo-Aid shows it under Settings &rsaquo; Home Mini Device: 8 pairs like 00-11-22-33-44-55-66-77. It isn't the Wi-Fi address your router lists.</span>
       </div>
       <div class="notice error" id="setupError" hidden></div>
       <div class="row-actions">

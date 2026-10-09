@@ -190,8 +190,8 @@ footer.settings { display: grid; gap: 10px; font-size: 0.82rem; color: var(--mut
       </div>
       <div class="field">
         <label for="f-device">Home Mini device ID <span class="muted">(optional)</span></label>
-        <input id="f-device" name="device_id" spellcheck="false" autocapitalize="characters" autocorrect="off" placeholder="Found automatically from your account">
-        <span class="hint">Only needed if live readings don't appear. Octo-Aid shows it under Settings › Home Mini Device.</span>
+        <input id="f-device" name="device_id" spellcheck="false" autocapitalize="characters" autocorrect="off" placeholder="00-11-22-33-44-55-66-77">
+        <span class="hint">Needed if live readings don't appear. Octo-Aid shows it under Settings › Home Mini Device: 8 pairs like 00-11-22-33-44-55-66-77. It isn't the Wi-Fi address your router lists.</span>
       </div>
       <div class="notice error" id="setupError" hidden></div>
       <div class="row-actions">
@@ -317,6 +317,9 @@ const LIVE_EVERY_MS = 60000;
 const TODAY_EVERY_MS = 5 * 60000;
 const AHEAD_EVERY_MS = 30 * 60000;
 const PEAK_START = 16, PEAK_END = 19, CHEAP_SLOTS = 6, CHEAP_P = 15;
+// A Home Mini device ID: 8 pairs of hex digits joined by dashes. Not the Wi-Fi MAC the router shows.
+const DEVICE_ID_RE = /^(?:[0-9A-F]{2}-){7}[0-9A-F]{2}$/;
+const DEVICE_ID_HELP = "The Home Mini device ID should be 8 pairs of letters and numbers joined by dashes, like 00-11-22-33-44-55-66-77. Octo-Aid shows it under Settings › Home Mini Device. It isn't the Wi-Fi address your router lists for the Home Mini.";
 
 // ---------- storage (wrapped: private mode or cleared data must not break the app) ----------
 function load(name, fallback) {
@@ -551,12 +554,13 @@ const App = {
     const mpan = (body.mpan || "").replace(/\s/g, "");
     const serial = (body.serial || "").replace(/\s/g, "").toUpperCase();
     const account = (body.account || "").replace(/\s/g, "").toUpperCase();
-    const device = (body.device_id || "").trim().toUpperCase();
+    const device = (body.device_id || "").trim().replace(/[\s:]/g, "-").toUpperCase();
     if (!key) throw new ApiError("Enter your API key.", 400);
     if (!/^sk_live_[A-Za-z0-9]+$/.test(key)) throw new ApiError("That doesn't look like an Octopus API key. It should start with sk_live_.", 400);
     if (!/^\d{13}$/.test(mpan)) throw new ApiError("The MPAN should be 13 digits.", 400);
     if (!serial) throw new ApiError("Enter your electricity meter's serial number.", 400);
     if (account && !/^A-[0-9A-F]{8}$/.test(account)) throw new ApiError("The account number should look like A-1234ABCD.", 400);
+    if (device && !DEVICE_ID_RE.test(device)) throw new ApiError(DEVICE_ID_HELP, 400);
 
     const octo = new Octopus(key);
     let region = null;
@@ -762,6 +766,12 @@ const App = {
     if (!ids.length) throw new ApiError("Octopus didn't list a device for live readings on your account. Tap Change details and enter the device ID Octo-Aid shows under Settings › Home Mini Device (it looks like 00-11-22-33-44-55-66-77).", 404, "no_device");
     return ids;
   },
+  // Octopus answers "Unauthorized" when the device isn't linked to this key's account.
+  deviceError(e) {
+    if (this.cfg.device_id && /unauthori/i.test(e.message))
+      return new ApiError("Octopus won't give readings for Home Mini " + this.cfg.device_id + " with this API key, so it probably isn't the right device ID. Check it under Change details. " + DEVICE_ID_HELP, 403, "device_refused");
+    return e;
+  },
   rememberDevice(dev) {
     if (!this.cfg.device_id) { this.cfg.device_id = dev; save("config", this.cfg); }
   },
@@ -785,7 +795,7 @@ const App = {
       catch (e) { if (e.code === "rate_limited") throw e; lastError = e; continue; }
       if (rows.length) { reading = rows[rows.length - 1]; this.rememberDevice(dev); break; }
     }
-    if (!reading) throw lastError || new ApiError("No live reading from your Home Mini right now.", 404, "no_reading");
+    if (!reading) throw lastError ? this.deviceError(lastError) : new ApiError("No live reading from your Home Mini right now.", 404, "no_reading");
     const demand = Number(reading.demand || 0);
     let rate = null;
     try {
@@ -808,7 +818,7 @@ const App = {
       catch (e) { if (e.code === "rate_limited") throw e; lastError = e; continue; }
       if (rows.length) { this.rememberDevice(dev); break; }
     }
-    if (!rows || !rows.length) throw lastError || new ApiError("Your Home Mini hasn't sent any readings for today yet.", 404, "no_reading");
+    if (!rows || !rows.length) throw lastError ? this.deviceError(lastError) : new ApiError("Your Home Mini hasn't sent any readings for today yet.", 404, "no_reading");
     const parsed = rows.filter((r) => r.readAt).map((r) => {
       let t = parseTs(r.readAt); t -= t % 1800;
       return [t, r.consumption == null ? null : Number(r.consumption), r.consumptionDelta == null ? null : Number(r.consumptionDelta)];
