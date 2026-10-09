@@ -8,7 +8,7 @@ Reference app: **Octo-Aid** (Dave uses it on his iPhone). Its screens were revie
 
 ---
 
-## 1. Fixes (do these first)
+## 1. Fixes (done in 1.7)
 
 1.1 **Remove the real Home Mini device ID from both apps.** The "it looks like 00-1C-55-…" example in the error text and the setup hint is Dave's real device ID. Replace it with a made-up one of the same format (for example `00-00-00-00-00-00-00-00`) in `agile_dashboard.py` and `docs/index.html`.
 

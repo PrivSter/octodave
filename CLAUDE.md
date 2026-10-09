@@ -26,3 +26,4 @@ Dave, UK, on Agile Octopus with an Octopus Home Mini. Infosec analyst, so keep s
 ## History
 - 1.5: Mac app (Python server, Keychain, history analysis, live Home Mini, tariff comparison).
 - 1.6: "Today so far" in the Right now panel (both). First iPhone version, adding Prices ahead and the cheapest window.
+- 1.7: Roadmap section 1. Real device ID removed from help text; device ID format check; out-of-date live readings flagged and priced at the rate when taken; Mac app no longer quits under an open tab and reconnects after a restart; Prices ahead on the Mac; iPhone warns when set up in a Safari tab.
