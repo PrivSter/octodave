@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.7"
+VERSION = "1.8"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -518,6 +518,9 @@ class App:
             "configured": self.configured(),
             "key_hint": hint,
             "key_store": self.keystore.where(),
+            "version": VERSION,
+            "code_from": ("Code folder" if os.path.join("Code", "octodave") in os.path.abspath(__file__)
+                          else "app bundle"),
             "mpan": self.cfg.get("mpan", ""),
             "serial": self.cfg.get("serial", ""),
             "account": self.cfg.get("account", ""),
@@ -1597,7 +1600,7 @@ function renderAll() {
   renderComparison(data, prep);
 
   const s = state.status;
-  $("#settingsLine").textContent = "Key " + (s.key_hint || "saved") + " in " + s.key_store + " · MPAN " + s.mpan +
+  $("#settingsLine").textContent = "OctoDave " + s.version + " (from " + s.code_from + ") · Key " + (s.key_hint || "saved") + " in " + s.key_store + " · MPAN " + s.mpan +
     (s.account ? " · " + s.account : "") + (data.tariff_history.length ? " · " + data.tariff_history.map((h) => h.code).join(", ") : "");
   const notes = (data.notes || []).slice();
   if (data.missing_prices) notes.push(data.missing_prices + " half-hours had no published price and were left out of costs.");
@@ -2024,7 +2027,7 @@ def main():
         sys.exit("Port %d is already in use. Is the dashboard already running? "
                  "Otherwise try --port 8899." % args.port)
 
-    print("%s %s is running at %s" % (APP_NAME, VERSION, url), flush=True)
+    print("%s %s is running at %s (code: %s)" % (APP_NAME, VERSION, url, os.path.abspath(__file__)), flush=True)
     print("API key storage: %s" % APP.keystore.where(), flush=True)
     if args.app:
         threading.Thread(target=idle_watchdog, args=(SERVER, IDLE_LIMIT), daemon=True).start()

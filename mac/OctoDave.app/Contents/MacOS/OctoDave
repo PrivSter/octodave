@@ -25,4 +25,14 @@ if [ -z "$PY" ]; then
   exit 1
 fi
 
-exec "$PY" "$RES/agile_dashboard.py" --app >> "$LOG" 2>&1
+# Run the latest code from Dave's clone of the repo (~/Code/octodave), which Claude keeps in step
+# with GitHub, so updates need only Quit and reopen. Fall back to the copy inside this app if the
+# clone is missing or its script doesn't parse.
+SCRIPT="$RES/agile_dashboard.py"
+LIVE="$HOME/Code/octodave/mac/OctoDave.app/Contents/Resources/agile_dashboard.py"
+if [ -f "$LIVE" ] && "$PY" -c 'import ast,sys; ast.parse(open(sys.argv[1], encoding="utf-8").read())' "$LIVE" 2>>"$LOG"; then
+  SCRIPT="$LIVE"
+fi
+echo "$(date '+%Y-%m-%d %H:%M:%S') starting $SCRIPT" >> "$LOG"
+
+exec "$PY" "$SCRIPT" --app >> "$LOG" 2>&1
