@@ -1,0 +1,8 @@
+dist/
+.DS_Store
+__pycache__/
+*.pyc
+*.log
+.env
+config.json
+api-key
