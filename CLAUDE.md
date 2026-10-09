@@ -7,7 +7,7 @@ Dave, UK, on Agile Octopus with an Octopus Home Mini. Infosec analyst, so keep s
 
 ## Layout
 - `mac/OctoDave.app/Contents/Resources/agile_dashboard.py`: the whole Mac app. Python 3.8+ standard library only (no pip packages). Contains the server, the Octopus client and the page (the `PAGE` string).
-- `mac/OctoDave.app/Contents/MacOS/OctoDave`: bash launcher. Starts the server on port 8765 with `--app` (stops itself 10 minutes after the last tab closes).
+- `mac/OctoDave.app/Contents/MacOS/OctoDave`: bash launcher. Starts the server on port 8765 with `--app` (stops itself an hour after the last sign of an open tab; an open tab reconnects by itself when the app is reopened).
 - `mac/build.sh`: zips the app into `dist/` (git-ignored).
 - `docs/index.html`: the whole iPhone app, a browser port of the Mac app. Served by GitHub Pages from `/docs` on `main`.
 

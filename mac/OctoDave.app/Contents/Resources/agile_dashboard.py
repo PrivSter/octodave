@@ -1355,6 +1355,24 @@ const state = { days: 30, data: null, status: null, live: true, liveTimer: null,
   today: null, todayAt: 0, todayErr: "" };
 const TODAY_EVERY_MS = 5 * 60000;
 
+// When the app has stopped, say so once, stop polling, and reload by itself when it's opened again.
+function showStopped() {
+  if (state.stopped) return;
+  state.stopped = true;
+  stopLive();
+  if (state.heartbeat) clearInterval(state.heartbeat);
+  const n = document.createElement("div");
+  n.className = "notice error"; n.id = "stoppedNote";
+  n.textContent = "OctoDave has stopped running. Open it again from Applications and this page will reconnect by itself.";
+  document.querySelector(".wrap").prepend(n);
+  const timer = setInterval(async () => {
+    try {
+      const r = await fetch("/healthz", { cache: "no-store" });
+      if (r.ok) { clearInterval(timer); location.reload(); }
+    } catch (e) { /* still stopped */ }
+  }, 5000);
+}
+
 async function api(path, opts) {
   opts = opts || {};
   const headers = Object.assign({ "X-Dash-Token": TOKEN }, opts.body ? { "Content-Type": "application/json" } : {});
@@ -1362,7 +1380,8 @@ async function api(path, opts) {
   try {
     r = await fetch(path, Object.assign({}, opts, { headers }));
   } catch (e) {
-    const err = new Error("The dashboard has stopped. Open OctoDave again to restart it.");
+    showStopped();
+    const err = new Error("OctoDave has stopped. Open it again from Applications.");
     err.code = "stopped";
     throw err;
   }
@@ -1782,7 +1801,11 @@ function updateLiveToggle() {
   b.textContent = state.live ? "Pause live updates" : "Resume live updates";
 }
 $("#liveToggle").addEventListener("click", () => { state.live = !state.live; updateLiveToggle(); state.live ? startLive() : stopLive(); });
-document.addEventListener("visibilitychange", () => { if (!document.hidden && state.live) pollLive(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden || state.stopped) return;
+  api("/api/ping").catch(() => {}); // tell the app this tab is still in use as soon as it's looked at
+  if (state.live) pollLive();
+});
 
 // ---------- start ----------
 function startDashboard(fresh) {
@@ -1814,7 +1837,9 @@ function startDashboard(fresh) {
 # Entry point
 # --------------------------------------------------------------------------
 
-IDLE_LIMIT = 10 * 60  # app mode: stop after this long with no dashboard tab open
+# App mode: stop after this long with no sign of an open dashboard tab. Safari pauses the timers of
+# background tabs, so an open but unwatched tab can go quiet; an hour keeps that from stopping the app.
+IDLE_LIMIT = 60 * 60
 
 
 def idle_watchdog(server, limit):
