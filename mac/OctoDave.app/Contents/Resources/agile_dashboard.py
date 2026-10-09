@@ -72,6 +72,7 @@ DIST_TO_GSP = {
 
 ANALYSIS_TTL = 15 * 60   # seconds to reuse an analysis before asking Octopus again
 LIVE_MIN_GAP = 30        # never ask Octopus for a live reading more often than this
+LIVE_STALE_AFTER = 10 * 60  # a Home Mini reading older than this is shown as out of date
 TODAY_MIN_GAP = 5 * 60   # today's running cost: ask Octopus at most this often
 
 
@@ -817,20 +818,29 @@ class App:
                             % (self.cfg["device_id"], DEVICE_ID_HELP), 403, "device_refused")
         return e
 
-    def _current_rate(self):
-        now = int(time.time())
-        slot = now - now % 1800
-        if slot in self.current_rate_cache:
-            return self.current_rate_cache[slot]
+    def _tariff_at(self, t):
         agreements, _ = self.agreements()
         code = agreements[-1][0]
         for c, s, e in agreements:
-            if s <= now < e:
+            if s <= t < e:
                 code = c
-        table = fetch_rates(self.octo, code, "standard-unit-rates", slot - 1800, slot + 3600)
-        rate = table.at(now)
-        self.current_rate_cache = {slot: rate}
+        return code
+
+    def _rate_at(self, t):
+        """Unit rate for the half-hour containing epoch t, cached per half-hour."""
+        t = int(t)
+        slot = t - t % 1800
+        if slot in self.current_rate_cache:
+            return self.current_rate_cache[slot]
+        table = fetch_rates(self.octo, self._tariff_at(t), "standard-unit-rates", slot - 1800, slot + 3600)
+        rate = table.at(t)
+        if len(self.current_rate_cache) > 8:
+            self.current_rate_cache.clear()
+        self.current_rate_cache[slot] = rate
         return rate
+
+    def _current_rate(self):
+        return self._rate_at(time.time())
 
     def live(self):
         if self.live_cache and time.time() - self.live_at < LIVE_MIN_GAP:
@@ -856,16 +866,33 @@ class App:
             raise (self._device_error(last_error) if last_error else
                    ApiError("No live reading from your Home Mini right now.", 404, "no_reading"))
         demand = float(reading.get("demand") or 0)
+        now = time.time()
+        try:
+            read_ts = parse_ts(reading["readAt"]) if reading.get("readAt") else int(now)
+        except (ValueError, TypeError):
+            read_ts = int(now)
+        age = max(0, int(now - read_ts))
+        stale = age > LIVE_STALE_AFTER
         try:
             rate = self._current_rate()
         except ApiError:
             rate = None
+        # An old reading is priced at the rate for the half-hour it was taken in, not today's price now.
+        reading_rate = rate
+        if stale:
+            try:
+                reading_rate = self._rate_at(read_ts)
+            except ApiError:
+                reading_rate = None
         out = {
             "demand_w": demand,
             "read_at": reading.get("readAt"),
+            "age_s": age,
+            "stale": stale,
             "rate_p": rate,
-            "cost_per_hour_p": round(demand / 1000.0 * rate, 2) if rate is not None else None,
-            "fetched": int(time.time() * 1000),
+            "reading_rate_p": reading_rate,
+            "cost_per_hour_p": round(demand / 1000.0 * reading_rate, 2) if reading_rate is not None else None,
+            "fetched": int(now * 1000),
         }
         self.live_cache, self.live_at = out, time.time()
         return out
@@ -873,13 +900,7 @@ class App:
     # -- today so far ------------------------------------------------------------
 
     def _tariff_now(self):
-        now = time.time()
-        agreements, _ = self.agreements()
-        code = agreements[-1][0]
-        for c, s, e in agreements:
-            if s <= now < e:
-                code = c
-        return code
+        return self._tariff_at(time.time())
 
     def today(self):
         if self.today_cache and time.time() - self.today_at < TODAY_MIN_GAP:
@@ -1145,6 +1166,8 @@ button:disabled { opacity: 0.6; cursor: default; }
 .pill.peak { background: color-mix(in srgb, var(--peak) 18%, transparent); color: var(--peak); }
 .pill.off { background: color-mix(in srgb, var(--off) 18%, transparent); color: var(--off); }
 .pill.cheap { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
+.pill.stale { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
+.watts.stale { opacity: 0.5; }
 @media (max-width: 640px) { .live { grid-template-columns: 1fr; } }
 
 /* Summary tiles */
@@ -1686,23 +1709,29 @@ async function pollLive() {
     const l = await api("/api/live");
     liveMessage("");
     $("#liveWatts").innerHTML = Math.round(l.demand_w).toLocaleString("en-GB") + "<small>W</small>";
+    $("#liveWatts").classList.toggle("stale", !!l.stale);
+    const readAt = l.read_at ? new Date(l.read_at) : null;
+    const readHm = readAt ? readAt.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : "";
     const facts = $("#liveFacts"); facts.replaceChildren();
     const fact = (label, value) => { const s = document.createElement("span"); s.innerHTML = '<span class="muted"></span> <b></b>'; s.children[0].textContent = label; s.children[1].textContent = value; facts.appendChild(s); };
     fact("Price now", l.rate_p == null ? "not published" : pence(l.rate_p) + "/kWh");
-    fact("Costing", l.cost_per_hour_p == null ? "–" : pence(l.cost_per_hour_p) + " an hour");
+    fact(l.stale ? "Costing at " + readHm + " price" : "Costing", l.cost_per_hour_p == null ? "–" : pence(l.cost_per_hour_p) + " an hour");
     const band = $("#liveBand"); band.replaceChildren();
     const pill = document.createElement("span");
     const now = new Date();
-    if (isPeak(now)) { pill.className = "pill peak"; pill.textContent = "4–7pm peak"; }
+    if (l.stale) { pill.className = "pill stale"; pill.textContent = "Reading out of date"; pill.title = "Octopus hasn't had a new reading from your Home Mini since " + readHm + ". It usually catches up on its own; restarting the Home Mini can help."; }
+    else if (isPeak(now)) { pill.className = "pill peak"; pill.textContent = "4–7pm peak"; }
     else if (l.rate_p != null && l.rate_p < 15) { pill.className = "pill cheap"; pill.textContent = "Cheap slot"; }
     else { pill.className = "pill off"; pill.textContent = "Off-peak"; }
     band.appendChild(pill);
     renderToday();
     refreshToday();
-    if (l.read_at) {
-      const age = Math.max(0, Math.round((Date.now() - new Date(l.read_at).getTime()) / 1000));
-      $("#liveAge").textContent = "Reading from " + (age < 90 ? age + "s" : Math.round(age / 60) + " min") + " ago";
+    if (readAt) {
+      const age = Math.max(0, Math.round((Date.now() - readAt.getTime()) / 1000));
+      $("#liveAge").textContent = l.stale ? "Last reading at " + readHm + ", " + Math.round(age / 60) + " min ago"
+        : "Reading from " + (age < 90 ? age + "s" : Math.round(age / 60) + " min") + " ago";
     }
+    liveMessage(l.stale ? "Octopus hasn't had a new reading from your Home Mini since " + readHm + ". It usually catches up on its own; restarting the Home Mini can help." : "");
   } catch (e) {
     if (e.status === 429 || e.code === "rate_limited") {
       state.live = false; stopLive(); updateLiveToggle();

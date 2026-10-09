@@ -93,6 +93,8 @@ button:disabled { opacity: 0.6; cursor: default; }
 .pill.peak { background: color-mix(in srgb, var(--peak) 18%, transparent); color: var(--peak); }
 .pill.off { background: color-mix(in srgb, var(--off) 18%, transparent); color: var(--off); }
 .pill.cheap { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
+.pill.stale { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
+.watts.stale { opacity: 0.5; }
 .live-foot { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
 
 /* Tiles */
@@ -213,7 +215,7 @@ footer.settings { display: grid; gap: 10px; font-size: 0.82rem; color: var(--mut
       </div>
       <div class="facts">
         <div class="fact"><span class="label">Price now</span><span class="value" id="factRate">–</span><span class="sub">per kWh</span></div>
-        <div class="fact"><span class="label">Costing</span><span class="value" id="factCost">–</span><span class="sub">an hour</span></div>
+        <div class="fact"><span class="label">Costing</span><span class="value" id="factCost">–</span><span class="sub" id="factCostSub">an hour</span></div>
         <div class="fact today"><span class="label">Today so far</span><span class="value" id="factToday">…</span><span class="sub" id="factTodaySub"></span></div>
       </div>
       <p class="notice" id="liveNote" hidden></p>
@@ -317,6 +319,7 @@ const LIVE_EVERY_MS = 60000;
 const TODAY_EVERY_MS = 5 * 60000;
 const AHEAD_EVERY_MS = 30 * 60000;
 const PEAK_START = 16, PEAK_END = 19, CHEAP_SLOTS = 6, CHEAP_P = 15;
+const LIVE_STALE_AFTER_S = 10 * 60; // a Home Mini reading older than this is shown as out of date
 // A Home Mini device ID: 8 pairs of hex digits joined by dashes. Not the Wi-Fi MAC the router shows.
 const DEVICE_ID_RE = /^(?:[0-9A-F]{2}-){7}[0-9A-F]{2}$/;
 const DEVICE_ID_HELP = "The Home Mini device ID should be 8 pairs of letters and numbers joined by dashes, like 00-11-22-33-44-55-66-77. Octo-Aid shows it under Settings › Home Mini Device. It isn't the Wi-Fi address your router lists for the Home Mini.";
@@ -636,13 +639,13 @@ const App = {
     return { list: [[code, 0, Infinity]], fromAccount: false };
   },
 
-  async tariffNow() {
+  async tariffAt(t) {
     const { list } = await this.agreements();
-    const now = nowS();
     let code = list[list.length - 1][0];
-    for (const [c, s, e] of list) if (s <= now && now < e) code = c;
+    for (const [c, s, e] of list) if (s <= t && t < e) code = c;
     return code;
   },
+  tariffNow() { return this.tariffAt(nowS()); },
 
   async analysis(days, refresh) {
     days = Math.max(1, Math.min(Number(days) || 30, 366));
@@ -776,13 +779,15 @@ const App = {
     if (!this.cfg.device_id) { this.cfg.device_id = dev; save("config", this.cfg); }
   },
 
-  async ratesAround(t0, t1) {
-    const code = await this.tariffNow();
-    const key = code + "|" + t0 + "|" + t1;
-    if (this.rateCache[key]) return this.rateCache[key];
-    const table = await fetchRates(this.octo, code, "standard-unit-rates", t0, t1);
-    this.rateCache = { [key]: table };
-    return table;
+  // Unit rate for the half-hour containing epoch t, cached per half-hour.
+  async rateAt(t) {
+    t = Math.floor(t);
+    const slot = t - (t % 1800);
+    if (slot in this.rateCache) return this.rateCache[slot];
+    const table = await fetchRates(this.octo, await this.tariffAt(t), "standard-unit-rates", slot - 1800, slot + 3600);
+    if (Object.keys(this.rateCache).length > 8) this.rateCache = {};
+    this.rateCache[slot] = table.at(t);
+    return this.rateCache[slot];
   },
 
   async live() {
@@ -797,13 +802,17 @@ const App = {
     }
     if (!reading) throw lastError ? this.deviceError(lastError) : new ApiError("No live reading from your Home Mini right now.", 404, "no_reading");
     const demand = Number(reading.demand || 0);
-    let rate = null;
-    try {
-      const now = nowS(), slot = now - (now % 1800);
-      rate = (await this.ratesAround(slot - 1800, slot + 3600)).at(now);
-    } catch (e) { /* show the reading without a price */ }
-    this.liveCache = { demand_w: demand, read_at: reading.readAt, rate_p: rate,
-      cost_per_hour_p: rate == null ? null : (demand / 1000) * rate, fetched: Date.now() };
+    const now = nowS();
+    let readTs = now;
+    try { if (reading.readAt) readTs = parseTs(reading.readAt); } catch (e) { /* treat as fresh */ }
+    const age = Math.max(0, now - readTs), stale = age > LIVE_STALE_AFTER_S;
+    let rate = null, readingRate = null;
+    try { rate = await this.rateAt(now); } catch (e) { /* show the reading without a price */ }
+    // An old reading is priced at the rate for the half-hour it was taken in, not the price now.
+    readingRate = rate;
+    if (stale) { try { readingRate = await this.rateAt(readTs); } catch (e) { readingRate = null; } }
+    this.liveCache = { demand_w: demand, read_at: reading.readAt, age_s: age, stale, rate_p: rate, reading_rate_p: readingRate,
+      cost_per_hour_p: readingRate == null ? null : (demand / 1000) * readingRate, fetched: Date.now() };
     this.liveAt = Date.now();
     return this.liveCache;
   },
@@ -1297,17 +1306,23 @@ async function pollLive() {
     const l = await App.live();
     liveMessage("");
     $("#liveWatts").innerHTML = Math.round(l.demand_w).toLocaleString("en-GB") + "<small>W</small>";
+    $("#liveWatts").classList.toggle("stale", !!l.stale);
+    const readAt = l.read_at ? new Date(l.read_at) : null;
     $("#factRate").textContent = l.rate_p == null ? "not published" : pence(l.rate_p);
     $("#factCost").textContent = l.cost_per_hour_p == null ? "–" : pence(l.cost_per_hour_p);
+    $("#factCostSub").textContent = l.stale && readAt ? "an hour, at " + hhmm(readAt) + " price" : "an hour";
     const pill = document.createElement("span");
-    if (isPeak(new Date())) { pill.className = "pill peak"; pill.textContent = "4–7pm peak"; }
+    if (l.stale) { pill.className = "pill stale"; pill.textContent = "Reading out of date"; }
+    else if (isPeak(new Date())) { pill.className = "pill peak"; pill.textContent = "4–7pm peak"; }
     else if (l.rate_p != null && l.rate_p < CHEAP_P) { pill.className = "pill cheap"; pill.textContent = "Cheap slot"; }
     else { pill.className = "pill off"; pill.textContent = "Off-peak"; }
     $("#liveBand").replaceChildren(pill);
-    if (l.read_at) {
-      const age = Math.max(0, Math.round((Date.now() - new Date(l.read_at).getTime()) / 1000));
-      $("#liveAge").textContent = "Reading from " + (age < 90 ? age + "s" : Math.round(age / 60) + " min") + " ago";
+    if (readAt) {
+      const age = Math.max(0, Math.round((Date.now() - readAt.getTime()) / 1000));
+      $("#liveAge").textContent = l.stale ? "Last reading " + hhmm(readAt) + ", " + Math.round(age / 60) + " min ago"
+        : "Reading from " + (age < 90 ? age + "s" : Math.round(age / 60) + " min") + " ago";
     }
+    liveMessage(l.stale ? "Octopus hasn't had a new reading from your Home Mini since " + hhmm(readAt) + ". It usually catches up on its own; restarting the Home Mini can help." : "");
     refreshToday();
   } catch (e) {
     if (e.status === 429 || e.code === "rate_limited") { state.live = false; stopLive(); updateLiveToggle(); }
