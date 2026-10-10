@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.17"
+VERSION = "1.17.1"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -2285,7 +2285,7 @@ function renderToday() {
   const t = state.today;
   if (t) {
     s.children[1].textContent = pounds(t.total_p);
-    let sub = "(" + t.kwh.toFixed(1) + " kWh, incl. " + pence(t.standing_p) + " standing charge";
+    let sub = "(" + t.kwh.toFixed(1) + " kWh, incl. " + pence(t.standing_p) + " daily standing charge";
     if (t.unpriced_kwh > 0.05) sub += ", " + t.unpriced_kwh.toFixed(1) + " kWh not yet priced";
     s.children[2].textContent = sub + ")";
     s.title = "Energy " + pounds(t.energy_p) + " + standing charge " + pounds(t.standing_p) +
