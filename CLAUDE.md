@@ -37,3 +37,4 @@ Dave, UK, on Agile Octopus with an Octopus Home Mini. Infosec analyst, so keep s
 - 1.9.2: Removed the Billing month period button (it mostly duplicated the This billing month panel). A heading above the history panels says which days they cover.
 - 1.10: Monthly budget (roadmap 2.3) inside This billing month: spent vs budget, even pace, forecast vs budget. Mac saves it via POST /api/prefs into config.json; iPhone in local storage. Same `renderBudget()` in both.
 - 1.11: History fills the gap since Octopus's last settled reading (up to 3 days) with Home Mini half-hours (roadmap 2.6), flagged as estimates (4th element of each `hh` row, `estimated_from`, a `source` column in the CSV, faded bars and squares). The forecast leaves out today. Same `halfhour_energy()` / `halfhourEnergy()` in both apps.
+- 1.11.1: Budget box moved up, straight under the billing month figures.

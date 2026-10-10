@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.11"
+VERSION = "1.11.1"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -1515,8 +1515,6 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
         <span class="muted small" id="billSpan"></span>
       </div>
       <div class="billtiles" id="billTiles"><span class="loading">Working out your billing month…</span></div>
-      <div class="legend"><span><i style="background:var(--accent)"></i>This month</span><span><i style="background:var(--peak)"></i>Forecast</span><span><i style="background:var(--muted)"></i>Last month</span></div>
-      <div class="chart" id="billChart"></div>
       <div class="budget" id="budgetBox">
         <div class="budget-head"><h3>Budget</h3><button type="button" class="btn" id="budgetEdit">Set budget</button></div>
         <form id="budgetForm" hidden novalidate>
@@ -1529,6 +1527,8 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
         </form>
         <div id="budgetBody"></div>
       </div>
+      <div class="legend"><span><i style="background:var(--accent)"></i>This month</span><span><i style="background:var(--peak)"></i>Forecast</span><span><i style="background:var(--muted)"></i>Last month</span></div>
+      <div class="chart" id="billChart"></div>
       <details class="workings"><summary>How the forecast is worked out</summary><dl id="billWorkings"></dl></details>
     </section>
 
