@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.11.1"
+VERSION = "1.12"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -548,6 +548,8 @@ class App:
             "device_id": self.cfg.get("device_id", ""),
             "bill_day": int(self.cfg.get("bill_day") or 15),
             "budget_p": self.cfg.get("budget_p"),
+            "band_low_p": self.cfg.get("band_low_p", BAND_DEFAULTS[0]),
+            "band_high_p": self.cfg.get("band_high_p", BAND_DEFAULTS[1]),
             "region": (self.cfg.get("region") or "").strip("_"),
             "host": self.octo.host if self.octo else None,
             "live_available": bool(self.cfg.get("account") or self.cfg.get("device_id")),
@@ -607,8 +609,9 @@ class App:
         self.keystore.set(key)
         cfg = {"mpan": mpan, "serial": serial, "account": account, "device_id": device, "region": region,
                "bill_day": bill_day}
-        if self.cfg.get("budget_p"):
-            cfg["budget_p"] = self.cfg["budget_p"]
+        for keep in PREF_KEYS:
+            if self.cfg.get(keep) is not None:
+                cfg[keep] = self.cfg[keep]
         save_config(cfg)
         with self.lock:
             self.cfg = cfg
@@ -621,19 +624,30 @@ class App:
         return self.status()
 
     def set_prefs(self, body):
-        """Settings that don't need Octopus to check them. For now: the monthly budget in pence."""
-        budget = body.get("budget_p")
+        """Settings that don't need Octopus to check them: the monthly budget and the price bands, in pence.
+        Only the keys sent are changed."""
         cfg = dict(self.cfg)
-        if budget is None:
-            cfg.pop("budget_p", None)
-        else:
+        if "budget_p" in body:
+            budget = body.get("budget_p")
+            if budget is None:
+                cfg.pop("budget_p", None)
+            else:
+                try:
+                    budget = int(budget)
+                except (TypeError, ValueError):
+                    budget = 0
+                if not 100 <= budget <= 100000:
+                    raise ApiError("Enter a budget between £1 and £1,000.", 400)
+                cfg["budget_p"] = budget
+        if "band_low_p" in body or "band_high_p" in body:
             try:
-                budget = int(budget)
+                low = round(float(body.get("band_low_p")), 1)
+                high = round(float(body.get("band_high_p")), 1)
             except (TypeError, ValueError):
-                budget = 0
-            if not 100 <= budget <= 100000:
-                raise ApiError("Enter a budget between £1 and £1,000.", 400)
-            cfg["budget_p"] = budget
+                raise ApiError("Enter both band thresholds in pence.", 400)
+            if not (-20 <= low <= 100 and low < high <= 150):
+                raise ApiError("Low must be below High, and both between -20p and 150p.", 400)
+            cfg["band_low_p"], cfg["band_high_p"] = low, high
         save_config(cfg)
         with self.lock:
             self.cfg = cfg
@@ -1395,6 +1409,18 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
 .period-caption span { color: var(--muted); font-weight: 400; }
 
 /* Budget */
+.bands-top { display: grid; gap: 8px; }
+.bandbar { display: flex; height: 16px; border-radius: 8px; overflow: hidden; background: var(--surface-2); }
+.bandbar span { display: block; height: 100%; }
+.bandrows { display: grid; gap: 4px; }
+.bandrow { display: grid; grid-template-columns: minmax(7em, auto) 1fr auto; gap: 4px 12px; align-items: baseline; font-variant-numeric: tabular-nums; }
+.bandrow .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.bandrow .fig { text-align: right; }
+.bandnote { font-weight: 600; margin: 0; }
+#bandsForm { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); }
+#bandsForm[hidden] { display: none; }
+#bandsForm input { font: inherit; padding: 7px 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); width: 5.5em; }
+@media (max-width: 560px) { .bandrow { grid-template-columns: auto 1fr; } .bandrow .share { text-align: right; } .bandrow .fig { grid-column: 1 / -1; text-align: left; } }
 .budget { display: grid; gap: 8px; padding: 12px 14px; border-radius: 10px; background: var(--surface-2); }
 .budget-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .budget h3 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; margin: 0; }
@@ -1494,6 +1520,7 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
         <span class="muted small" id="aheadSpan"></span>
       </div>
       <div class="chart" id="aheadChart"><span class="loading">Fetching Agile prices…</span></div>
+      <div class="legend" id="aheadLegend"></div>
       <p class="readout muted" id="aheadReadout">Click a bar to see its price.</p>
       <div class="best">
         <div class="row">
@@ -1554,6 +1581,33 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
         <h3 class="small muted" style="margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em">Most expensive evenings</h3>
         <div class="table-wrap"><table id="worstTable"></table></div>
       </div>
+    </section>
+
+    <section class="panel" aria-labelledby="bandsTitle">
+      <div class="panel-head">
+        <h2 id="bandsTitle">Price bands</h2>
+        <span class="muted small" id="bandsRule"></span>
+      </div>
+      <div class="bands-top">
+        <div class="bandbar" id="bandBar"></div>
+        <div class="bandrows" id="bandRows"></div>
+        <p class="bandnote" id="bandNote"></p>
+      </div>
+      <div class="legend"><span><i style="background:var(--good)"></i>Low</span><span><i style="background:var(--off)"></i>Mid</span><span><i style="background:var(--peak)"></i>High</span><span>kWh per day. Paler bars include Home Mini estimates.</span></div>
+      <div class="chart" id="bandChart"></div>
+      <p class="readout muted" id="bandReadout">Click a day to see its split.</p>
+      <div><button type="button" class="btn" id="bandsEdit">Change bands</button></div>
+      <form id="bandsForm" hidden novalidate>
+        <label for="f-bandlow">Low is under</label>
+        <input id="f-bandlow" type="number" inputmode="decimal" step="0.5" min="-20" max="100">
+        <label for="f-bandhigh">p, High is from</label>
+        <input id="f-bandhigh" type="number" inputmode="decimal" step="0.5" min="-19" max="150">
+        <span>p</span>
+        <button type="submit" class="btn primary">Save</button>
+        <button type="button" class="btn" id="bandsCancel">Cancel</button>
+        <button type="button" class="btn" id="bandsReset">Reset to 10p / 25p</button>
+        <span class="muted small" id="bandsError"></span>
+      </form>
     </section>
 
     <section class="panel" aria-labelledby="heatTitle">
@@ -1820,7 +1874,7 @@ function renderAll() {
   renderShift();
   renderWorst(prep);
   renderHeatmap(prep);
-  renderComparison(data, prep);
+  renderComparison(data, prep); renderBands(prep, getBands());
 
   const s = state.status;
   $("#settingsLine").textContent = "OctoDave " + s.version + " (from " + s.code_from + ") · Key " + (s.key_hint || "saved") + " in " + s.key_store + " · MPAN " + s.mpan +
@@ -2270,6 +2324,150 @@ wireBudget(() => state.status && state.status.budget_p, async (p) => {
   state.status = await api("/api/prefs", { method: "POST", body: JSON.stringify({ budget_p: p }) });
 });
 
+function getBands() {
+  const s = state.status || {};
+  return { low: s.band_low_p != null ? Number(s.band_low_p) : BAND_DEFAULTS.low,
+    high: s.band_high_p != null ? Number(s.band_high_p) : BAND_DEFAULTS.high };
+}
+wireBands(getBands, async (low, high) => {
+  state.status = await api("/api/prefs", { method: "POST", body: JSON.stringify({ band_low_p: low, band_high_p: high }) });
+}, () => {
+  if (state.data) renderBands(prepare(state.data), getBands());
+  renderAhead();
+});
+
+// ---------- price bands (same in both apps) ----------
+// Each half-hour is Low, Mid or High rate by its unit price. Low is below `low` pence (negative prices
+// included), High is `high` pence and over, Mid is in between. Dave can change both thresholds.
+const BAND_DEFAULTS = { low: 10, high: 25 };
+const BAND_ORDER = ["high", "mid", "low"];
+const BAND_LABEL = { low: "Low", mid: "Mid", high: "High" };
+const BAND_COLOUR = { low: "var(--good)", mid: "var(--off)", high: "var(--peak)" };
+const bandOf = (p, b) => (p == null ? null : p < b.low ? "low" : p >= b.high ? "high" : "mid");
+const bandRule = (b) => "Low under " + b.low + "p · Mid " + b.low + "–" + b.high + "p · High " + b.high + "p and over";
+
+function renderBands(prep, b) {
+  if (!prep) return;
+  $("#bandsRule").textContent = bandRule(b);
+  const tot = { low: { k: 0, c: 0 }, mid: { k: 0, c: 0 }, high: { k: 0, c: 0 } };
+  const perDay = prep.days.map((g) => {
+    const d = { day: g.day, est: g.est, low: 0, mid: 0, high: 0 };
+    for (const r of g.rows) {
+      const band = bandOf(r.p, b);
+      if (!band) continue;
+      d[band] += r.k; tot[band].k += r.k; tot[band].c += r.k * r.p;
+    }
+    return d;
+  });
+  const allK = tot.low.k + tot.mid.k + tot.high.k, allC = tot.low.c + tot.mid.c + tot.high.c;
+  const pct = (v, all) => (all > 0 ? Math.round((v / all) * 100) : 0);
+
+  const bar = $("#bandBar"); bar.replaceChildren();
+  bar.setAttribute("role", "img");
+  bar.setAttribute("aria-label", BAND_ORDER.map((k) => BAND_LABEL[k] + " " + pct(tot[k].k, allK) + "% of kWh").join(", "));
+  for (const k of BAND_ORDER) {
+    if (!tot[k].k) continue;
+    const s = document.createElement("span"); s.style.width = ((tot[k].k / allK) * 100).toFixed(2) + "%"; s.style.background = BAND_COLOUR[k];
+    bar.appendChild(s);
+  }
+  const rows = $("#bandRows"); rows.replaceChildren();
+  for (const k of BAND_ORDER) {
+    const row = document.createElement("div"); row.className = "bandrow";
+    row.innerHTML = '<span class="name"><i class="sw"></i><b></b></span><span class="muted small share"></span><span class="fig"></span>';
+    row.querySelector(".sw").style.background = BAND_COLOUR[k];
+    row.querySelector("b").textContent = BAND_LABEL[k] + " rate";
+    row.querySelector(".share").textContent = pct(tot[k].k, allK) + "% of use · " + pct(tot[k].c, allC) + "% of cost";
+    row.querySelector(".fig").textContent = tot[k].k.toFixed(1) + " kWh · " + pounds(tot[k].c) + (tot[k].k ? " · avg " + pence(tot[k].c / tot[k].k) : "");
+    rows.appendChild(row);
+  }
+  $("#bandNote").textContent = allK
+    ? pct(tot.high.k, allK) + "% of your electricity was at High rate, and it made up " + pct(tot.high.c, allC) + "% of your energy cost."
+    : "No priced half-hours in this period.";
+
+  // Daily kWh stacked by band.
+  const box = $("#bandChart");
+  const n = perDay.length;
+  const L = 40, R = 6, T = 8, B = 24, H = 180;
+  const W = Math.max(Math.max(300, Math.floor(box.clientWidth || 600)), L + R + n * 7);
+  const maxK = Math.max(...perDay.map((d) => d.low + d.mid + d.high), 0.5);
+  const step = niceMax(maxK / 4), max = step * 4;
+  const y = (v) => T + (H - T - B) * (1 - v / max);
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": "Daily electricity use split by price band" });
+  for (let i = 0; i <= 4; i++) {
+    const v = step * i;
+    svg.appendChild(svgEl("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: "var(--line)", "stroke-width": 1 }));
+    const t = svgEl("text", { x: L - 5, y: y(v) + 4, "text-anchor": "end" }); t.textContent = (Number.isInteger(v) ? v : v.toFixed(1)) + ""; svg.appendChild(t);
+  }
+  const slot = (W - L - R) / n, bw = Math.max(2, slot * 0.72);
+  const labelEvery = Math.ceil(n / Math.max(3, Math.floor((W - L - R) / 52)));
+  perDay.forEach((d, i) => {
+    const x = L + i * slot + (slot - bw) / 2;
+    const grp = svgEl("g", { "data-i": i, style: "cursor:pointer" });
+    grp.appendChild(svgEl("rect", { x: L + i * slot, width: slot, y: T, height: H - T - B, fill: "transparent" }));
+    let base = 0;
+    for (const k of ["low", "mid", "high"]) {
+      if (!d[k]) continue;
+      grp.appendChild(svgEl("rect", { x, width: bw, y: y(base + d[k]), height: Math.max(0, y(base) - y(base + d[k])), fill: BAND_COLOUR[k], "fill-opacity": d.est ? 0.5 : 1 }));
+      base += d[k];
+    }
+    const tip = svgEl("title", {}); tip.textContent = bandDayText(d); grp.appendChild(tip);
+    svg.appendChild(grp);
+    if (i % labelEvery === 0) {
+      const t = svgEl("text", { x: x + bw / 2, y: H - 7, "text-anchor": "middle" });
+      t.textContent = new Date(d.day + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+      svg.appendChild(t);
+    }
+  });
+  svg.addEventListener("click", (ev) => {
+    const grp = ev.target.closest("g[data-i]");
+    if (grp) $("#bandReadout").textContent = bandDayText(perDay[Number(grp.dataset.i)]);
+  });
+  box.replaceChildren(svg);
+}
+
+// Small key for charts coloured by band (Prices ahead).
+function renderBandLegend(el, b) {
+  if (!el) return;
+  el.replaceChildren();
+  for (const k of ["low", "mid", "high"]) {
+    const s = document.createElement("span"), i = document.createElement("i");
+    i.style.background = BAND_COLOUR[k];
+    s.append(i, BAND_LABEL[k] + (k === "low" ? " under " + b.low + "p" : k === "high" ? " " + b.high + "p and over" : " " + b.low + "–" + b.high + "p"));
+    el.appendChild(s);
+  }
+}
+
+function bandDayText(d) {
+  const all = d.low + d.mid + d.high;
+  return new Date(d.day + "T12:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }) + ": " +
+    all.toFixed(1) + " kWh. High " + d.high.toFixed(1) + ", Mid " + d.mid.toFixed(1) + ", Low " + d.low.toFixed(1) +
+    (d.est ? " (includes Home Mini estimates)" : "");
+}
+
+function wireBands(getBands, saveBands, onChange) {
+  const form = $("#bandsForm");
+  const close = () => { show(form, false); $("#bandsError").textContent = ""; };
+  $("#bandsEdit").addEventListener("click", () => {
+    const b = getBands();
+    $("#f-bandlow").value = b.low; $("#f-bandhigh").value = b.high;
+    show(form, true); $("#f-bandlow").focus();
+  });
+  $("#bandsCancel").addEventListener("click", close);
+  $("#bandsReset").addEventListener("click", async () => {
+    try { await saveBands(BAND_DEFAULTS.low, BAND_DEFAULTS.high); close(); onChange(); }
+    catch (e) { $("#bandsError").textContent = e.message; }
+  });
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const low = parseFloat($("#f-bandlow").value), high = parseFloat($("#f-bandhigh").value);
+    if (!(low >= -20 && low <= 100) || !(high > low && high <= 150)) {
+      $("#bandsError").textContent = "Low must be below High, and both between -20p and 150p."; return;
+    }
+    try { await saveBands(low, high); close(); onChange(); }
+    catch (e) { $("#bandsError").textContent = e.message; }
+  });
+}
+
 // ---------- prices ahead (same as the iPhone app) ----------
 const CHEAP_P = 15, AHEAD_EVERY_MS = 15 * 60000;
 const hhmm = (d) => d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
@@ -2287,10 +2485,10 @@ async function loadAhead(force) {
   }
 }
 function priceColour(ms, p) {
-  if (p < CHEAP_P) return "var(--good)";
-  return isPeak(new Date(ms)) ? "var(--peak)" : "var(--off)";
+  return BAND_COLOUR[bandOf(p, getBands())];
 }
 function renderAhead() {
+  renderBandLegend($("#aheadLegend"), getBands());
   const a = state.ahead;
   if (!a) return;
   const now = Date.now(), slotStart = now - (now % 1800000);
@@ -2405,6 +2603,8 @@ function startDashboard(fresh) {
 # App mode: stop after this long with no sign of an open dashboard tab. Safari pauses the timers of
 # background tabs, so an open but unwatched tab can go quiet; an hour keeps that from stopping the app.
 IDLE_LIMIT = 60 * 60
+PREF_KEYS = ("budget_p", "band_low_p", "band_high_p")
+BAND_DEFAULTS = (10, 25)  # pence: Low is under the first, High is the second and over
 
 
 def idle_watchdog(server, limit):

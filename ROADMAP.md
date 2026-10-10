@@ -49,7 +49,7 @@ Octo-Aid's method, which is transparent and reasonable:
 - Remaining, % used, days elapsed, and a gauge.
 - Actual vs pace (budget × days elapsed ÷ days in month) vs predicted (from 2.2), with an over/under message.
 
-### 2.4 Price bands
+### 2.4 Price bands (done in 1.12)
 Octo-Aid splits usage into High, Mid and Low rate. Add bands with editable thresholds (suggested defaults: Low under 10p, High 25p and over, Mid in between; negative prices count as Low).
 - Daily usage bars stacked by band.
 - Band summary for the period: share of kWh, kWh and £ for each band.
