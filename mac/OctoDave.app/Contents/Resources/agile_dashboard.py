@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.12"
+VERSION = "1.13"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -1096,15 +1096,17 @@ class App:
     # -- prices ahead -------------------------------------------------------------
 
     def ahead(self):
-        """Published unit rates from the current half-hour onwards (to 23:00 tomorrow after ~4pm)."""
-        if self.ahead_cache and time.time() - self.ahead_cache[0] < 15 * 60:
-            return self.ahead_cache[1]
+        """Published unit rates from midnight today onwards (to 23:00 tomorrow after ~4pm). The page shows
+        the chart from the current half-hour; the earlier ones give today's lowest and highest."""
         now = int(time.time())
-        slot = now - now % 1800
+        midnight = int(datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+        if (self.ahead_cache and time.time() - self.ahead_cache[0] < 15 * 60
+                and self.ahead_cache[1]["from"] == midnight * 1000):
+            return self.ahead_cache[1]
         code = self._tariff_at(now)
-        table = fetch_rates(self.octo, code, "standard-unit-rates", slot, slot + 48 * 3600)
-        slots = [[st * 1000, v] for st, v in zip(table.starts, table.values) if st >= slot]
-        out = {"code": code, "slots": slots}
+        table = fetch_rates(self.octo, code, "standard-unit-rates", midnight, now - now % 1800 + 48 * 3600)
+        slots = [[st * 1000, v] for st, v in zip(table.starts, table.values) if st >= midnight]
+        out = {"code": code, "from": midnight * 1000, "slots": slots}
         self.ahead_cache = (time.time(), out)
         return out
 
@@ -1409,6 +1411,12 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
 .period-caption span { color: var(--muted); font-weight: 400; }
 
 /* Budget */
+.glance { display: grid; gap: 4px; margin-top: 12px; font-size: 0.88rem; font-variant-numeric: tabular-nums; }
+.glance[hidden] { display: none; }
+.glance p { margin: 0; display: flex; flex-wrap: wrap; gap: 2px 14px; }
+.glance p > span { white-space: nowrap; }
+.glance b { font-family: var(--font-num); font-weight: 650; }
+.glance .band-low { color: var(--good); } .glance .band-high { color: var(--peak); }
 .bands-top { display: grid; gap: 8px; }
 .bandbar { display: flex; height: 16px; border-radius: 8px; overflow: hidden; background: var(--surface-2); }
 .bandbar span { display: block; height: 100%; }
@@ -1511,6 +1519,7 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
         <div class="facts" id="liveFacts"><span class="loading">Waiting for your Home Mini…</span></div>
         <div id="liveBand"></div>
       </div>
+      <div class="glance" id="priceGlance" aria-live="polite" hidden></div>
       <p class="notice" id="liveNote" hidden></p>
     </section>
 
@@ -2063,14 +2072,10 @@ async function pollLive() {
     const fact = (label, value) => { const s = document.createElement("span"); s.innerHTML = '<span class="muted"></span> <b></b>'; s.children[0].textContent = label; s.children[1].textContent = value; facts.appendChild(s); };
     fact("Price now", l.rate_p == null ? "not published" : pence(l.rate_p) + "/kWh");
     fact(l.stale ? "Costing at " + readHm + " price" : "Costing", l.cost_per_hour_p == null ? "–" : pence(l.cost_per_hour_p) + " an hour");
-    const band = $("#liveBand"); band.replaceChildren();
-    const pill = document.createElement("span");
-    const now = new Date();
-    if (l.stale) { pill.className = "pill stale"; pill.textContent = "Reading out of date"; pill.title = "Octopus hasn't had a new reading from your Home Mini since " + readHm + ". It usually catches up on its own; restarting the Home Mini can help."; }
-    else if (isPeak(now)) { pill.className = "pill peak"; pill.textContent = "4–7pm peak"; }
-    else if (l.rate_p != null && l.rate_p < 15) { pill.className = "pill cheap"; pill.textContent = "Cheap slot"; }
-    else { pill.className = "pill off"; pill.textContent = "Off-peak"; }
-    band.appendChild(pill);
+    state.lastLive = l;
+    state.lastLiveTitle = l.stale ? "Octopus hasn't had a new reading from your Home Mini since " + readHm + ". It usually catches up on its own; restarting the Home Mini can help." : "";
+    renderLivePill();
+    renderPriceGlance();
     renderToday();
     refreshToday();
     if (readAt) {
@@ -2333,7 +2338,7 @@ wireBands(getBands, async (low, high) => {
   state.status = await api("/api/prefs", { method: "POST", body: JSON.stringify({ band_low_p: low, band_high_p: high }) });
 }, () => {
   if (state.data) renderBands(prepare(state.data), getBands());
-  renderAhead();
+  renderAhead(); renderLivePill();
 });
 
 // ---------- price bands (same in both apps) ----------
@@ -2469,7 +2474,7 @@ function wireBands(getBands, saveBands, onChange) {
 }
 
 // ---------- prices ahead (same as the iPhone app) ----------
-const CHEAP_P = 15, AHEAD_EVERY_MS = 15 * 60000;
+const AHEAD_EVERY_MS = 15 * 60000;
 const hhmm = (d) => d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 state.ahead = null; state.aheadAt = 0; state.win = 4;
 
@@ -2489,6 +2494,7 @@ function priceColour(ms, p) {
 }
 function renderAhead() {
   renderBandLegend($("#aheadLegend"), getBands());
+  renderPriceGlance();
   const a = state.ahead;
   if (!a) return;
   const now = Date.now(), slotStart = now - (now % 1800000);
@@ -2567,6 +2573,75 @@ document.querySelectorAll("#winSeg button").forEach((b) => b.addEventListener("c
 }));
 let aheadResize = null;
 window.addEventListener("resize", () => { clearTimeout(aheadResize); aheadResize = setTimeout(renderAhead, 200); });
+
+// ---------- today's prices at a glance (same in both apps) ----------
+// Uses the published prices (state.ahead, which starts at midnight today). Redrawn whenever the prices
+// load, on each live reading and once a minute, so "until" moves on when the half-hour changes.
+function renderPriceGlance() {
+  const el = $("#priceGlance");
+  const a = state.ahead;
+  if (!el) return;
+  if (!a || !a.slots.length) { el.replaceChildren(); show(el, false); return; }
+  const b = getBands();
+  const now = Date.now(), slotStart = now - (now % 1800000), todayK = dayKey(new Date());
+  const slots = a.slots;
+  const i = slots.findIndex((s) => s[0] === slotStart);
+  el.replaceChildren();
+  const line = (parts) => {
+    const p = document.createElement("p");
+    for (const [label, value, cls] of parts) {
+      const s = document.createElement("span");
+      if (label) { const l = document.createElement("span"); l.className = "muted"; l.textContent = label + " "; s.appendChild(l); }
+      const v = document.createElement("b"); v.textContent = value; if (cls) v.className = cls; s.appendChild(v);
+      p.appendChild(s);
+    }
+    el.appendChild(p);
+  };
+  const bandWord = (p) => BAND_LABEL[bandOf(p, b)];
+  if (i >= 0) {
+    const cur = slots[i][1];
+    let j = i + 1;
+    while (j < slots.length && slots[j][1] === cur && slots[j][0] - slots[j - 1][0] === 1800000) j++;
+    const until = new Date(slots[j - 1][0] + 1800000);
+    const parts = [["Now", pence(cur) + " · " + bandWord(cur) + " rate", "band-" + bandOf(cur, b)], ["until", hhmm(until)]];
+    if (j < slots.length && slots[j][0] === until.getTime()) {
+      const nx = slots[j][1];
+      parts.push(["then", pence(nx) + " (" + bandWord(nx) + ")", "band-" + bandOf(nx, b)]);
+    } else {
+      parts.push(["then", "not published yet"]);
+    }
+    line(parts);
+  }
+  const today = slots.filter((s) => dayKey(new Date(s[0])) === todayK);
+  if (today.length) {
+    const lo = today.reduce((x, y) => (y[1] < x[1] ? y : x)), hi = today.reduce((x, y) => (y[1] > x[1] ? y : x));
+    line([["Today lowest", pence(lo[1]) + " at " + hhmm(new Date(lo[0])), "band-" + bandOf(lo[1], b)],
+      ["highest", pence(hi[1]) + " at " + hhmm(new Date(hi[0])), "band-" + bandOf(hi[1], b)],
+      ["spread", pence(hi[1] - lo[1])]]);
+  }
+  show(el, el.childNodes.length > 0);
+}
+
+// The pill next to the live reading: the band for the current half-hour, or a warning if the reading is old.
+function livePill(l) {
+  const pill = document.createElement("span");
+  if (l.stale) {
+    pill.className = "pill stale"; pill.textContent = "Reading out of date";
+    return pill;
+  }
+  if (l.rate_p == null) { pill.className = "pill off"; pill.textContent = isPeak(new Date()) ? "4–7pm peak" : "Price not published"; return pill; }
+  const band = bandOf(l.rate_p, getBands());
+  pill.className = "pill " + ({ low: "cheap", mid: "off", high: "peak" })[band];
+  pill.textContent = BAND_LABEL[band] + " rate" + (isPeak(new Date()) ? " · 4–7pm peak" : "");
+  return pill;
+}
+function renderLivePill() {
+  if (!state.lastLive) return;
+  const pill = livePill(state.lastLive);
+  if (state.lastLive.stale && state.lastLiveTitle) pill.title = state.lastLiveTitle;
+  $("#liveBand").replaceChildren(pill);
+}
+setInterval(() => { if (!document.hidden) renderPriceGlance(); }, 60000);
 
 // ---------- start ----------
 function startDashboard(fresh) {

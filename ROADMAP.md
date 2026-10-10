@@ -55,7 +55,7 @@ Octo-Aid splits usage into High, Mid and Low rate. Add bands with editable thres
 - Band summary for the period: share of kWh, kWh and £ for each band.
 - "High-rate usage" insight: % of kWh at High rate and what it cost.
 
-### 2.5 Today's prices at a glance
+### 2.5 Today's prices at a glance (done in 1.13)
 In or next to the Right now panel:
 - "Until 20:30 · next 8.4p at 20:30";
 - today's lowest, highest and spread;
