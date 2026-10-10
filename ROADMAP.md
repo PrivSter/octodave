@@ -73,6 +73,22 @@ Tap a day in the daily chart to open that day: half-hourly bars coloured by band
 
 ---
 
+### 2.9 Weather-adjusted forecast
+Dave's idea: usage rises when it's cold (electric heating, plus hot water and showers), so the billing-month forecast should allow for the weather.
+
+**What his data showed (checked 10 Oct 2026, 179 days from April):** below about 12°C each degree colder adds roughly 0.3 kWh a day (days under 10°C averaged 8.1 kWh against about 7 kWh at 13–20°C). The fit is weak so far (R² about 0.07) because the data is mostly spring and summer, with only 13 properly cold days; day-to-day use (showers, kettle, hot water) dominates. The effect should get clearer through the winter. 7 Oct (12°C) was his highest day in six months at 11.7 kWh.
+
+**Design:**
+- Fit daily kWh = base + slope × heating degrees (degrees below a base temperature, try 12–15.5°C and pick the best fit) on the last ~120 days, refitted whenever history loads.
+- Apply it only when the data supports it (slope above zero, enough cold days, fit better than the plain average); otherwise keep the current 28-day average method.
+- Remaining days in the billing month: use the daily mean temperature forecast (up to 16 days ahead) to predict kWh per day, priced at the recent average unit rate, plus the standing charge.
+- Show the workings, e.g. "Next 5 days average 13°C; your usage rises about 0.3 kWh a day per degree below 12°C; weather adjustment +£0.40".
+
+**Data and privacy:**
+- Weather: Open-Meteo (free, no key). Forecast `api.open-meteo.com/v1/forecast`, history `archive-api.open-meteo.com/v1/archive`, both with `daily=temperature_2m_mean&timezone=Europe/London`. Both allow calls from web pages.
+- Location: the outward half of the postcode on the Octopus account (e.g. "AL10") turned into coordinates with `api.postcodes.io/outcodes/<outcode>`. Only the outward code leaves the app; never the full postcode, address or account details. Coordinates rounded to 0.1°.
+- Add those three hosts to `connect-src` in docs/index.html's CSP (and nothing else); the Mac app calls them from Python.
+
 ## 3. Later
 
 - **Price alerts.** Octo-Aid has notifications. A page on GitHub Pages can't send push notifications by itself. A simpler route is a Claude scheduled task that runs in the cloud after 16:00 each day, reads tomorrow's Agile prices (public API, no key needed) and messages Dave about negative or very cheap slots. Dave wants scheduled tasks to run in the cloud only, never tied to his laptop.
