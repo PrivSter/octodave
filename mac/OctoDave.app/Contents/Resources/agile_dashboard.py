@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.18.2"
+VERSION = "1.18.3"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -1164,17 +1164,18 @@ class App:
     def first_reading(self):
         """Start of the earliest half-hourly reading Octopus holds for this meter. Saved once found."""
         serial = self.cfg.get("serial")
-        if self.cfg.get("first_read_ms") and self.cfg.get("first_read_serial") == serial:
-            return {"first_ms": self.cfg["first_read_ms"]}
+        if self.cfg.get("first_half_ms") and self.cfg.get("first_half_serial") == serial:
+            return {"first_ms": self.cfg["first_half_ms"]}
         # Without period_from Octopus only looks back about a week, so ask from long before smart meters.
         data = self.octo.request("/v1/electricity-meter-points/%s/meters/%s/consumption/" % (self.cfg["mpan"], serial),
-                                 {"page_size": 1, "order_by": "period", "period_from": "2010-01-01T00:00:00Z"})
-        rows = data.get("results") or []
-        if not rows or not rows[0].get("interval_start"):
+                                 {"page_size": 100, "order_by": "period", "period_from": "2010-01-01T00:00:00Z"})
+        starts = [parse_ts(r["interval_start"]) for r in (data.get("results") or []) if r.get("interval_start")]
+        if not starts:
             return {"first_ms": None}
-        ms = parse_ts(rows[0]["interval_start"]) * 1000
-        cfg = dict(self.cfg, first_read_ms=ms, first_read_serial=serial)
-        cfg.pop("first_reading_ms", None); cfg.pop("first_reading_serial", None)  # 1.18 saved a wrong date
+        ms = min(starts) * 1000  # earliest of the first page, whatever order Octopus returns it in
+        cfg = dict(self.cfg, first_half_ms=ms, first_half_serial=serial)
+        for old in ("first_reading_ms", "first_reading_serial", "first_read_ms", "first_read_serial"):
+            cfg.pop(old, None)
         save_config(cfg)
         with self.lock:
             self.cfg = cfg
@@ -2074,7 +2075,7 @@ function renderAll() {
 
   // First half-hourly reading Octopus holds for this meter (looked up once, then remembered).
   api("/api/first-reading").then((r) => r.first_ms).then((ms) => {
-    if (ms) $("#settingsLine").textContent += " · Half-hourly readings since " + new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "Europe/London" });
+    if (ms) $("#settingsLine").textContent += " · Half-hourly readings since " + new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "Europe/London" }) + " " + new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/London" });
   }).catch(() => {});
   const notes = (data.notes || []).slice();
   if (data.missing_prices) notes.push(data.missing_prices + " half-hours had no published price and were left out of costs.");
