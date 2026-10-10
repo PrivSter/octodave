@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.18.1"
+VERSION = "1.18.2"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -2074,7 +2074,7 @@ function renderAll() {
 
   // First half-hourly reading Octopus holds for this meter (looked up once, then remembered).
   api("/api/first-reading").then((r) => r.first_ms).then((ms) => {
-    if (ms) $("#settingsLine").textContent += " · Half-hourly readings since " + new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+    if (ms) $("#settingsLine").textContent += " · Half-hourly readings since " + new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "Europe/London" });
   }).catch(() => {});
   const notes = (data.notes || []).slice();
   if (data.missing_prices) notes.push(data.missing_prices + " half-hours had no published price and were left out of costs.");

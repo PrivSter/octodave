@@ -48,3 +48,4 @@ Dave, UK, on Agile Octopus with an Octopus Home Mini. Infosec analyst, so keep s
 - 1.17.1: "Today so far" wording: "… kWh, incl. 53.8p daily standing charge" in both apps.
 - 1.18: The details line at the bottom adds "Half-hourly readings since <date>": the earliest consumption row for the current meter (`order_by=period`, `page_size=1`), looked up once and saved as `first_reading_ms` / `first_reading_serial`. Mac `GET /api/first-reading`, iPhone `App.firstReading()`.
 - 1.18.1: Fix: without `period_from` Octopus only looked back about a week (1.18 showed 4 Oct 2026). Now asks from `period_from=2010-01-01T00:00:00Z`; saved under new keys `first_read_ms` / `first_read_serial`, and the old wrong keys are dropped.
+- 1.18.2: The first-reading date is shown in UK time (`timeZone: "Europe/London"`) so the Mac and iPhone agree whatever the device's time zone (they showed 28 and 29 Oct 2024).
