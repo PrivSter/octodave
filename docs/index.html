@@ -184,6 +184,19 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
 @media (max-width: 560px) { #dayTiles { grid-template-columns: 1fr 1fr; } }
 #insTiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 @media (max-width: 560px) { #insTiles { grid-template-columns: 1fr; } }
+.bc-facts { margin-bottom: 4px; }
+.bc-facts .value { font-size: 1.05rem; }
+@media (max-width: 560px) { .bc-facts { grid-template-columns: 1fr; } }
+.bc-list { display: grid; gap: 8px; margin-top: 4px; }
+.bc-bill { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; background: var(--surface-2); }
+.bc-bill summary { display: flex; justify-content: space-between; align-items: center; gap: 10px; cursor: pointer; list-style: none; flex-wrap: wrap; }
+.bc-bill summary::-webkit-details-marker { display: none; }
+.bc-dl { display: grid; grid-template-columns: minmax(8em, max-content) 1fr; gap: 4px 12px; margin: 10px 0 6px; font-size: 0.88rem; }
+.bc-dl dt { color: var(--muted); }
+.bc-dl dd { margin: 0; }
+@media (max-width: 560px) { .bc-dl { grid-template-columns: 1fr; } .bc-dl dd { margin-bottom: 4px; } }
+.bc-pdf { font-size: 0.88rem; }
+.bc-warn { border-color: var(--peak); }
 .bands-top { display: grid; gap: 8px; }
 .bandbar { display: flex; height: 16px; border-radius: 8px; overflow: hidden; background: var(--surface-2); }
 .bandbar span { display: block; height: 100%; }
@@ -345,6 +358,17 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
     <p class="period-caption" id="periodCaption" hidden></p>
     <div class="tiles" id="tiles"></div>
 
+    <section class="panel" aria-labelledby="bcTitle">
+      <div class="panel-head">
+        <h2 id="bcTitle">Bill check</h2>
+        <span class="muted small">Your Octopus statements against your half-hourly readings</span>
+      </div>
+      <div id="bcBody">
+        <p class="muted small" style="margin:0 0 8px">Gets your recent statements from Octopus and checks each one against your meter readings at your Agile prices. Also shows your balance, direct debit and the billing address Octopus has, and anything used since your last bill that hasn't been billed.</p>
+        <button type="button" class="btn" id="bcLoad">Check my bills</button>
+      </div>
+    </section>
+
     <section class="panel" aria-labelledby="peakTitle">
       <div class="panel-head">
         <h2 id="peakTitle">The 4–7pm peak</h2>
@@ -453,7 +477,7 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
         <button type="button" class="btn" id="editBtn">Change details</button>
         <button type="button" class="btn danger" id="forgetBtn">Forget my details</button>
       </span>
-      <span>OctoDave for iPhone 1.18.3</span>
+      <span>OctoDave for iPhone 1.19</span>
     </footer>
   </div>
 </div>
@@ -466,7 +490,7 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
 // your details in this app's local storage. No server, no third parties.
 // ======================================================================
 
-const VERSION = "1.18.3";
+const VERSION = "1.19";
 const API_HOSTS = ["https://api.octopus.energy", "https://api.oegb-kraken.energy"];
 const STORE = "octodave.v1.";
 const DIST_TO_GSP = { "10": "_A", "11": "_B", "12": "_C", "13": "_D", "14": "_E", "15": "_F", "16": "_G",
@@ -834,6 +858,20 @@ const App = {
     }
     this.weatherCache = { at: Date.now(), data };
     return data;
+  },
+
+  // Octopus's statements and payment details for the bill check (fetched on request, kept 30 minutes).
+  async bills() {
+    if (this.billsCache && Date.now() - this.billsCache.at < 30 * 60000) return this.billsCache.data;
+    if (!this.cfg.account) throw new ApiError("Add your account number under Change details to check your bills.");
+    const out = { raw_bills: null, raw_account: null, errors: {} };
+    const qs = [["raw_bills", "query Bills($acc: String!) { account(accountNumber: $acc) { bills(first: 12) { edges { node { id billType fromDate toDate issuedDate attachments(first: 1) { edges { node { temporaryUrl filename } } } ... on StatementType { openingBalance closingBalance consumptionStartDate consumptionEndDate totalCharges { netTotal taxTotal grossTotal } totalCredits { netTotal taxTotal grossTotal } transactions(first: 60) { edges { node { __typename postedDate amount title isHeld amounts { net tax gross } ... on Charge { isExport consumption { startDate endDate quantity unit usageCost supplyCharge } } } } } } } } } } }", "bills"], ["raw_account", "query Pay($acc: String!) { account(accountNumber: $acc) { balance billingAddressLine1 billingAddressPostcode paymentSchedules(first: 5) { edges { node { validFrom validTo paymentAmount paymentDay paymentFrequency isVariablePaymentAmount isPaymentHoliday } } } } }", "account"]];
+    for (const [key, q, err] of qs) {
+      try { out[key] = await this.octo.graphql(q, { acc: this.cfg.account }); }
+      catch (e) { out.errors[err] = String(e.message).replace(" for live data", ""); }
+    }
+    this.billsCache = { at: Date.now(), data: out };
+    return out;
   },
 
   // Start of the earliest half-hourly reading Octopus holds for this meter. Saved once found.
@@ -2503,6 +2541,195 @@ function insSlotText(i, s) {
 
 let insResize = null;
 window.addEventListener("resize", () => { clearTimeout(insResize); insResize = setTimeout(() => { if (state.prep) renderInsights(state.prep); }, 200); });
+
+// ---------- bill check (same in both apps) ----------
+// Fetches Octopus's own statements (GraphQL), then checks each one against the half-hourly readings priced
+// at your Agile rates. Also shows the balance, the direct debit schedule and the billing address Octopus holds,
+// and flags electricity used since the last bill that hasn't been billed yet.
+const edgesOf = (c) => ((c && c.edges) || []).map((e) => e.node).filter(Boolean);
+const gbp = (p) => (p == null ? "–" : pounds(p));
+const fmtD = (k) => new Date(k + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+const addDays = (k, n) => { const d = fromKey(k); d.setDate(d.getDate() + n); return ymd(d); };
+
+function normaliseBills(raw) {
+  const acc = (raw && raw.account) || {};
+  const bills = edgesOf(acc.bills).map((b) => {
+    const charges = edgesOf(b.transactions).filter((t) => t.__typename === "Charge" && !t.isExport && t.consumption);
+    const elec = charges.filter((t) => !/M3|CUBIC|GAS/i.test(t.consumption.unit || "")); // electricity only (this app has no gas)
+    const pdf = edgesOf(b.attachments)[0];
+    return {
+      id: b.id, issued: b.issuedDate, from: b.fromDate, to: b.toDate,
+      consFrom: b.consumptionStartDate || (elec.length ? elec.map((t) => t.consumption.startDate).sort()[0] : null),
+      consTo: b.consumptionEndDate || (elec.length ? elec.map((t) => t.consumption.endDate).sort().slice(-1)[0] : null),
+      opening: b.openingBalance, closing: b.closingBalance,
+      charged: b.totalCharges ? b.totalCharges.grossTotal : null,
+      kwh: elec.reduce((a, t) => a + Number(t.consumption.quantity || 0), 0),
+      gross: elec.reduce((a, t) => a + ((t.amounts && t.amounts.gross) != null ? t.amounts.gross : (t.amount || 0)), 0),
+      usageNet: elec.reduce((a, t) => a + (t.consumption.usageCost || 0), 0),
+      standingNet: elec.reduce((a, t) => a + (t.consumption.supplyCharge || 0), 0),
+      hasElec: elec.length > 0,
+      pdf: pdf && pdf.temporaryUrl ? pdf.temporaryUrl : null,
+      payments: edgesOf(b.transactions).filter((t) => t.__typename === "Payment").map((t) => ({ date: t.postedDate, amount: t.amounts ? t.amounts.gross : t.amount, title: t.title })),
+    };
+  }).sort((a, b) => ((b.issued || b.to || "") > (a.issued || a.to || "") ? 1 : -1));
+  return { bills, account: acc };
+}
+
+// What the half-hourly readings say for a run of whole days [fromK, toK] (inclusive), priced like the rest of the app.
+function readingsFor(data, fromK, toK) {
+  let kwh = 0, energy = 0, rows = 0, unpriced = 0, est = 0;
+  for (const [ms, k, p, e] of data.hh) {
+    const key = dayKey(new Date(ms));
+    if (key < fromK || key > toK) continue;
+    kwh += k; rows += 1;
+    if (p == null) unpriced += 1; else energy += k * p;
+    if (e) est += 1;
+  }
+  let standing = 0, days = 0;
+  for (let k = fromK; k <= toK; k = addDays(k, 1)) { standing += data.standing_by_day[k] || 0; days += 1; }
+  return { kwh, energy, standing, total: energy + standing, rows, days, unpriced, est };
+}
+
+function checkBill(b, data) {
+  if (!b.hasElec || !b.consFrom || !b.consTo) return null;
+  if (b.consFrom < dayKey(new Date(data.data_from))) return { tooOld: true };
+  // Octopus's end date may or may not include the last day; use whichever reading matches its kWh best.
+  const incl = readingsFor(data, b.consFrom, b.consTo), excl = readingsFor(data, b.consFrom, addDays(b.consTo, -1));
+  const ours = Math.abs(excl.kwh - b.kwh) < Math.abs(incl.kwh - b.kwh) ? Object.assign(excl, { lastDay: addDays(b.consTo, -1) }) : Object.assign(incl, { lastDay: b.consTo });
+  const diff = ours.total - b.gross, kwhDiff = ours.kwh - b.kwh;
+  const close = Math.abs(diff) <= Math.max(50, b.gross * 0.01);
+  const reasons = [];
+  if (!close) {
+    if (Math.abs(kwhDiff) > Math.max(1, b.kwh * 0.01)) {
+      reasons.push("The kWh differ: Octopus billed " + b.kwh.toFixed(1) + " kWh, your half-hourly readings show " + ours.kwh.toFixed(1) +
+        " kWh for the same days. A bill can use estimated readings, or readings that were corrected later. Ask Octopus which readings the bill used.");
+    } else {
+      reasons.push("The kWh match, so the difference is in the pricing. Check the tariff on the bill: OctoDave prices every half-hour at your Agile rate. Credits, adjustments or a different tariff on Octopus's side would explain it.");
+    }
+    if (ours.unpriced) reasons.push(ours.unpriced + " half-hours had no published price, so OctoDave left them out.");
+    if (ours.est) reasons.push("Some of these days are still Home Mini estimates in OctoDave.");
+  }
+  return { ours, diff, kwhDiff, close, reasons };
+}
+
+function renderBillCheck(res, data) {
+  const body = $("#bcBody"); body.replaceChildren();
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  const { bills, account } = normaliseBills(res.raw_bills);
+  const acc = (res.raw_account && res.raw_account.account) || {};
+
+  // Account facts.
+  const facts = el("div", "billtiles bc-facts");
+  const tile = (label, value, sub, warn) => {
+    const t = el("div", "billtile"); t.append(el("span", "label", label), el("span", "value", value), el("span", "sub" + (warn ? " up" : ""), sub || ""));
+    facts.appendChild(t);
+  };
+  if (acc.balance != null) {
+    tile("Account balance", (acc.balance < 0 ? "−" : "") + pounds(Math.abs(acc.balance)), acc.balance < 0 ? "Owed to Octopus" : acc.balance > 0 ? "In credit" : "Nothing owed", acc.balance < 0);
+  }
+  const today = ymd(new Date());
+  const sched = edgesOf(acc.paymentSchedules).filter((s) => !s.validTo || s.validTo >= today).sort((a, b) => (a.validFrom < b.validFrom ? 1 : -1))[0];
+  if (acc.paymentSchedules !== undefined) {
+    if (sched) {
+      const amt = sched.isVariablePaymentAmount ? "Variable amount" : sched.paymentAmount != null ? pounds(Number(sched.paymentAmount)) : "Amount not shown";
+      tile("Direct debit", amt, (sched.isPaymentHoliday ? "On a payment holiday. " : "") + (sched.paymentDay ? "Day " + sched.paymentDay + " of the month" : "") + (sched.validFrom ? ", since " + fmtD(sched.validFrom) : ""), !!sched.isPaymentHoliday);
+    } else {
+      tile("Direct debit", "None active", "Octopus has no current payment schedule for this account", true);
+    }
+  }
+  if (acc.billingAddressLine1 || acc.billingAddressPostcode) {
+    tile("Billing address", [acc.billingAddressLine1, acc.billingAddressPostcode].filter(Boolean).join(", "), "Where Octopus sends bills. Check it's current.");
+  }
+  if (facts.childNodes.length) body.appendChild(facts);
+  if (res.errors && res.errors.account) body.appendChild(el("p", "muted small", "Couldn't get the balance and direct debit: " + res.errors.account));
+
+  if (res.errors && res.errors.bills) { body.appendChild(el("p", "notice", "Couldn't get your statements from Octopus: " + res.errors.bills)); return; }
+  if (!bills.length) { body.appendChild(el("p", "notice", "Octopus didn't return any statements for this account.")); return; }
+
+  // Unbilled since the last statement.
+  const lastBilled = bills.filter((b) => b.hasElec && b.consTo).map((b) => b.consTo).sort().slice(-1)[0];
+  const yesterday = addDays(today, -1);
+  if (lastBilled && data && dayDiff(fromKey(lastBilled), new Date()) > 40) {
+    const since = addDays(lastBilled, 1);
+    const r = readingsFor(data, since, yesterday);
+    const n = el("p", "notice bc-warn");
+    n.textContent = "Octopus hasn't billed any electricity since " + fmtD(lastBilled) + ", " + dayDiff(fromKey(lastBilled), new Date()) +
+      " days ago. Your readings since then come to " + r.kwh.toFixed(0) + " kWh, about " + pounds(r.total) +
+      " including standing charges, which hasn't been billed yet. Worth raising with Octopus.";
+    body.appendChild(n);
+  }
+
+  // Statements, newest first.
+  const list = el("div", "bc-list");
+  for (const b of bills.slice(0, 8)) {
+    const c = data ? checkBill(b, data) : null;
+    const row = el("details", "bc-bill");
+    const sum = el("summary");
+    const left = el("span", "bc-when");
+    left.append(el("b", null, b.consFrom && b.consTo ? fmtD(b.consFrom) + " – " + fmtD(b.consTo) : (b.from ? fmtD(b.from) + " – " + fmtD(b.to) : "Statement")),
+      el("span", "muted small", " · issued " + (b.issued ? fmtD(b.issued) : "–")));
+    let chip;
+    if (!b.hasElec) chip = el("span", "pill off", "No electricity charges");
+    else if (!c) chip = el("span", "pill off", "Not checked");
+    else if (c.tooOld) chip = el("span", "pill off", "Too old to check");
+    else if (c.close) chip = el("span", "pill cheap", "Matches");
+    else chip = el("span", "pill peak", (c.diff > 0 ? "Billed " + pounds(c.diff) + " less" : "Billed " + pounds(-c.diff) + " more"));
+    sum.append(left, chip);
+    row.appendChild(sum);
+    const dl = el("dl", "bc-dl");
+    const add = (k, v) => dl.append(el("dt", null, k), el("dd", null, v));
+    if (b.hasElec) {
+      add("Octopus billed", b.kwh.toFixed(1) + " kWh, " + gbp(b.gross) + " including VAT (energy " + gbp(b.usageNet) + " + standing " + gbp(b.standingNet) + " before VAT)");
+      if (c && !c.tooOld) {
+        add("Your readings", c.ours.kwh.toFixed(1) + " kWh, " + pounds(c.ours.total) + " (energy " + pounds(c.ours.energy) + " + standing " + pounds(c.ours.standing) + ", both including VAT), " + c.ours.days + " days to " + fmtD(c.ours.lastDay));
+        add("Difference", (Math.abs(c.diff) < 0.5 ? "None" : (c.diff > 0 ? "Octopus billed " + pounds(c.diff) + " less" : "Octopus billed " + pounds(-c.diff) + " more")) +
+          (Math.abs(c.kwhDiff) >= 0.05 ? "; " + Math.abs(c.kwhDiff).toFixed(1) + " kWh " + (c.kwhDiff > 0 ? "fewer billed" : "more billed") : "; same kWh"));
+        if (c.close) add("Verdict", "Matches within rounding (Octopus works out VAT on the total, so pennies can differ).");
+        else for (const r of c.reasons) add("Why it might differ", r);
+      } else if (c && c.tooOld) add("Your readings", "This statement is from before the readings OctoDave has fetched.");
+    }
+    if (b.opening != null && b.closing != null) add("Balance", (b.opening < 0 ? "−" : "") + pounds(Math.abs(b.opening)) + " → " + (b.closing < 0 ? "−" : "") + pounds(Math.abs(b.closing)) + " (minus means owed)");
+    if (b.payments.length) add("Payments", b.payments.map((p) => (p.date ? fmtD(p.date) + " " : "") + pounds(Math.abs(p.amount || 0))).join(", "));
+    row.appendChild(dl);
+    if (b.pdf) { const a = el("a", "bc-pdf", "Open the bill (PDF)"); a.href = b.pdf; a.target = "_blank"; a.rel = "noopener noreferrer"; row.appendChild(a); }
+    list.appendChild(row);
+  }
+  body.appendChild(list);
+  body.appendChild(el("p", "muted small", "Your readings are priced at your Agile rates with VAT, plus the daily standing charge. Statements come straight from your Octopus account; nothing is sent anywhere else."));
+}
+
+// loadBills() -> {raw_bills, raw_account, errors}; loadReadings(fromKey) -> analysis data from that day to now.
+function wireBillCheck(loadBills, loadReadings) {
+  const run = async () => {
+    const body = $("#bcBody");
+    body.innerHTML = '<span class="loading">Getting your statements from Octopus…</span>';
+    try {
+      const res = await loadBills();
+      const { bills } = normaliseBills(res.raw_bills);
+      const starts = bills.filter((b) => b.hasElec && b.consFrom).map((b) => b.consFrom).sort();
+      let data = null;
+      if (starts.length) {
+        const limit = new Date(); limit.setDate(limit.getDate() - 395);
+        const from = starts.find((k) => fromKey(k) >= limit) || ymd(limit);
+        body.innerHTML = '<span class="loading">Checking them against your half-hourly readings…</span>';
+        try { data = await loadReadings(from); } catch (e) { res.errors = Object.assign({}, res.errors, { readings: e.message }); }
+      }
+      renderBillCheck(res, data);
+      if (res.errors && res.errors.readings) body.appendChild(Object.assign(document.createElement("p"), { className: "muted small", textContent: "Couldn't get your readings to compare: " + res.errors.readings }));
+    } catch (e) {
+      body.replaceChildren(Object.assign(document.createElement("p"), { className: "notice", textContent: e.message }));
+    }
+  };
+  const runAndOffer = async () => {
+    await run();
+    const b = document.createElement("button"); b.type = "button"; b.className = "btn"; b.textContent = "Check again";
+    b.addEventListener("click", runAndOffer);
+    $("#bcBody").appendChild(b);
+  };
+  $("#bcLoad").addEventListener("click", runAndOffer);
+}
+
+wireBillCheck(() => App.bills(), (from) => App.analysis(1, false, from, false));
 
 // ---------- start ----------
 function startDashboard(fresh) {
