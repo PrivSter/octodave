@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.20"
+VERSION = "1.21"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -1230,6 +1230,26 @@ class App:
             self.cfg = cfg
         return place
 
+    def temps_between(self, frm, to):
+        """Daily mean temperatures {YYYY-MM-DD: °C} for an export. Open-Meteo's archive (ERA5, back to 1940,
+        about 5 days behind) for older days, its forecast API's past days for the most recent ones."""
+        place = self._weather_place()
+        base = {"latitude": place["lat"], "longitude": place["lon"], "daily": "temperature_2m_mean",
+                "timezone": "Europe/London"}
+        temps = {}
+        archive_end = min(to, (datetime.now() - timedelta(days=6)).strftime("%Y-%m-%d"))
+        if frm <= archive_end:
+            q = urllib.parse.urlencode(dict(base, start_date=frm, end_date=archive_end))
+            daily = fetch_json("https://archive-api.open-meteo.com/v1/archive?" + q, timeout=40).get("daily") or {}
+            temps.update({d: t for d, t in zip(daily.get("time") or [], daily.get("temperature_2m_mean") or []) if t is not None})
+        if to > archive_end or len(temps) < 1:
+            q = urllib.parse.urlencode(dict(base, past_days=92, forecast_days=1))
+            daily = fetch_json("https://api.open-meteo.com/v1/forecast?" + q).get("daily") or {}
+            for d, t in zip(daily.get("time") or [], daily.get("temperature_2m_mean") or []):
+                if t is not None and frm <= d <= to and d not in temps:
+                    temps[d] = t
+        return temps
+
     def weather(self):
         """Daily mean temperatures for the last 92 days and the next 16, for the forecast's weather adjustment."""
         hit = self.weather_cache
@@ -1255,7 +1275,13 @@ class App:
 
     def csv(self, days, frm=None, to=None):
         data = self.analysis(days, frm=frm, compare=False)
-        lines = ["interval_start_local,kwh,unit_rate_p_per_kwh,cost_p,source"]
+        temps = {}
+        if frm and to:
+            try:
+                temps = self.temps_between(frm, to)
+            except Exception:  # weather is a bonus; the export still works without it
+                temps = {}
+        lines = ["interval_start_local,kwh,unit_rate_p_per_kwh,cost_p,source,daily_mean_temp_c"]
         for row in data["hh"]:
             ms, kwh, p = row[:3]
             ts = datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M")
@@ -1263,7 +1289,8 @@ class App:
                 continue
             cost = "" if p is None else "%.4f" % (kwh * p)
             src = "home_mini_estimate" if len(row) > 3 and row[3] else "settled"
-            lines.append("%s,%s,%s,%s,%s" % (ts, kwh, "" if p is None else p, cost, src))
+            t = temps.get(ts[:10])
+            lines.append("%s,%s,%s,%s,%s,%s" % (ts, kwh, "" if p is None else p, cost, src, "" if t is None else t))
         return "\n".join(lines) + "\n"
 
 
