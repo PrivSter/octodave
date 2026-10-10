@@ -92,6 +92,7 @@ Dave's idea: usage rises when it's cold (electric heating, plus hot water and sh
 
 ## 3. Later
 
-- **Price alerts.** Octo-Aid has notifications. A page on GitHub Pages can't send push notifications by itself. A simpler route is a Claude scheduled task that runs in the cloud after 16:00 each day, reads tomorrow's Agile prices (public API, no key needed) and messages Dave about negative or very cheap slots. Dave wants scheduled tasks to run in the cloud only, never tied to his laptop.
+- **Price alerts (done 10 Oct 2026, outside the apps).** Set up as a cloud scheduled task, "Agile price alerts (negative / under 5p)", running daily at 16:55 UK time for Region A. It push-notifies Dave only when tomorrow has a negative or under-5p half-hour, or when the prices weren't out or the check failed. Nothing in the repo runs it.
+  Original note: Octo-Aid has notifications. A page on GitHub Pages can't send push notifications by itself. A simpler route is a Claude scheduled task that runs in the cloud after 16:00 each day, reads tomorrow's Agile prices (public API, no key needed) and messages Dave about negative or very cheap slots. Dave wants scheduled tasks to run in the cloud only, never tied to his laptop.
 - **Tariff comparison.** OctoDave leaves out tariffs that need extra equipment. Octo-Aid includes them: it ranked Cosy (needs a heat pump), Snug (needs electric storage heaters) and Intelligent Flux (needs a battery or solar) as cheaper, which isn't useful unless Dave has that equipment. Keep them hidden by default, with an option to show them flagged by what they need.
 - Share or export a period summary (Octo-Aid has a share button on Usage).
