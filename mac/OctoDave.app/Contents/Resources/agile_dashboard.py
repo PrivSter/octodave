@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.13"
+VERSION = "1.13.1"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -1415,6 +1415,7 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
 .glance[hidden] { display: none; }
 .glance p { margin: 0; display: flex; flex-wrap: wrap; gap: 2px 14px; }
 .glance p > span { white-space: nowrap; }
+@media (min-width: 900px) { .glance { display: flex; flex-wrap: wrap; gap: 4px 16px; } .glance[hidden] { display: none; } .glance p + p { border-left: 1px solid var(--line); padding-left: 16px; } }
 .glance b { font-family: var(--font-num); font-weight: 650; }
 .glance .band-low { color: var(--good); } .glance .band-high { color: var(--peak); }
 .bands-top { display: grid; gap: 8px; }
