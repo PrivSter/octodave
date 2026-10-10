@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.19"
+VERSION = "1.20"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -1253,12 +1253,14 @@ class App:
 
     # -- CSV ----------------------------------------------------------------------
 
-    def csv(self, days, frm=None):
-        data = self.analysis(days, frm=frm)
+    def csv(self, days, frm=None, to=None):
+        data = self.analysis(days, frm=frm, compare=False)
         lines = ["interval_start_local,kwh,unit_rate_p_per_kwh,cost_p,source"]
         for row in data["hh"]:
             ms, kwh, p = row[:3]
             ts = datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M")
+            if to and ts[:10] > to:
+                continue
             cost = "" if p is None else "%.4f" % (kwh * p)
             src = "home_mini_estimate" if len(row) > 3 and row[3] else "settled"
             lines.append("%s,%s,%s,%s,%s" % (ts, kwh, "" if p is None else p, cost, src))
@@ -1370,9 +1372,12 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/ahead":
                 return self._json(200, APP.ahead())
             if path == "/api/export.csv":
-                body = APP.csv(days, frm)
-                name = "agile-usage-%s-%s.csv" % (datetime.now().strftime("%Y%m%d"),
-                                                  ("from-" + frm) if frm else "%dd" % days)
+                to = (query.get("to") or [None])[0]
+                if to and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", to):
+                    raise ApiError("That end date isn't valid.", 400)
+                body = APP.csv(days, frm, to)
+                name = ("octodave-usage-%s-to-%s.csv" % (frm, to)) if frm and to else "agile-usage-%s-%s.csv" % (
+                    datetime.now().strftime("%Y%m%d"), ("from-" + frm) if frm else "%dd" % days)
                 return self._send(200, body, "text/csv; charset=utf-8",
                                   {"Content-Disposition": 'attachment; filename="%s"' % name})
             return self._json(404, {"error": "Unknown request."})
@@ -1589,6 +1594,9 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
 @media (max-width: 560px) { .bc-dl { grid-template-columns: 1fr; } .bc-dl dd { margin-bottom: 4px; } }
 .bc-pdf { font-size: 0.88rem; }
 .bc-warn { border-color: var(--peak); }
+.csv-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; width: 100%; margin-top: 8px; }
+.csv-form[hidden] { display: none; }
+.csv-form input { font: inherit; padding: 6px 8px; border-radius: 9px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
 .bands-top { display: grid; gap: 8px; }
 .bandbar { display: flex; height: 16px; border-radius: 8px; overflow: hidden; background: var(--surface-2); }
 .bandbar span { display: block; height: 100%; }
@@ -1865,6 +1873,13 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
         <button type="button" class="btn danger" id="forgetBtn">Forget my details</button>
         <button type="button" class="btn" id="quitBtn">Quit</button>
       </span>
+      <form id="csvForm" class="csv-form" hidden novalidate>
+        <label for="f-csvfrom">Export from</label> <input id="f-csvfrom" type="date">
+        <label for="f-csvto">to</label> <input id="f-csvto" type="date">
+        <button type="submit" class="btn primary">Export</button>
+        <button type="button" class="btn" id="csvCancel">Cancel</button>
+        <span class="muted small" id="csvMsg"></span>
+      </form>
     </footer>
   </div>
 </div>
@@ -1998,8 +2013,12 @@ $("#quitBtn").addEventListener("click", async () => {
   const wrap = document.querySelector(".wrap");
   wrap.innerHTML = '<header class="top"><div><h1>OctoDave</h1><p class="sub muted small">Stopped. You can close this tab, and open OctoDave again whenever you want it.</p></div></header>';
 });
-$("#csvBtn").addEventListener("click", () => {
-  window.location.href = "/api/export.csv?" + periodQuery() + "&t=" + encodeURIComponent(TOKEN);
+$("#csvBtn").addEventListener("click", () => openCsvForm());
+$("#csvForm").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const r = csvRange(); if (!r) return;
+  $("#csvMsg").textContent = "Preparing… a long range can take a minute.";
+  window.location.href = "/api/export.csv?from=" + r.from + "&to=" + r.to + "&t=" + encodeURIComponent(TOKEN);
 });
 
 // ---------- period ----------
@@ -3441,6 +3460,24 @@ function wireBillCheck(loadBills, loadReadings) {
 }
 
 wireBillCheck(() => api("/api/bills"), (from) => api("/api/analysis?days=1&compare=0&from=" + from));
+
+
+// CSV export for any date range (up to about 13 months back).
+function openCsvForm() {
+  const to = new Date(), from = new Date(); from.setDate(from.getDate() - state.days + 1);
+  const min = new Date(); min.setDate(min.getDate() - 395);
+  $("#f-csvfrom").value = ymd(from); $("#f-csvto").value = ymd(to);
+  for (const id of ["#f-csvfrom", "#f-csvto"]) { $(id).min = ymd(min); $(id).max = ymd(to); }
+  $("#csvMsg").textContent = ""; show($("#csvForm"), true);
+}
+function csvRange() {
+  const from = $("#f-csvfrom").value, to = $("#f-csvto").value;
+  const min = new Date(); min.setDate(min.getDate() - 395);
+  if (!from || !to || to < from) { $("#csvMsg").textContent = "Pick a start date on or before the end date."; return null; }
+  if (from < ymd(min)) { $("#csvMsg").textContent = "The earliest start is " + fmtD(ymd(min)) + "."; return null; }
+  return { from, to };
+}
+$("#csvCancel").addEventListener("click", () => show($("#csvForm"), false));
 
 // ---------- start ----------
 function startDashboard(fresh) {

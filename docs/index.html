@@ -197,6 +197,9 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
 @media (max-width: 560px) { .bc-dl { grid-template-columns: 1fr; } .bc-dl dd { margin-bottom: 4px; } }
 .bc-pdf { font-size: 0.88rem; }
 .bc-warn { border-color: var(--peak); }
+.csv-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; width: 100%; margin-top: 8px; }
+.csv-form[hidden] { display: none; }
+.csv-form input { font: inherit; padding: 6px 8px; border-radius: 9px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
 .bands-top { display: grid; gap: 8px; }
 .bandbar { display: flex; height: 16px; border-radius: 8px; overflow: hidden; background: var(--surface-2); }
 .bandbar span { display: block; height: 100%; }
@@ -477,7 +480,14 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
         <button type="button" class="btn" id="editBtn">Change details</button>
         <button type="button" class="btn danger" id="forgetBtn">Forget my details</button>
       </span>
-      <span>OctoDave for iPhone 1.19</span>
+      <span>OctoDave for iPhone 1.20</span>
+      <form id="csvForm" class="csv-form" hidden novalidate>
+        <label for="f-csvfrom">Export from</label> <input id="f-csvfrom" type="date">
+        <label for="f-csvto">to</label> <input id="f-csvto" type="date">
+        <button type="submit" class="btn primary">Export</button>
+        <button type="button" class="btn" id="csvCancel">Cancel</button>
+        <span class="muted small" id="csvMsg"></span>
+      </form>
     </footer>
   </div>
 </div>
@@ -490,7 +500,7 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
 // your details in this app's local storage. No server, no third parties.
 // ======================================================================
 
-const VERSION = "1.19";
+const VERSION = "1.20";
 const API_HOSTS = ["https://api.octopus.energy", "https://api.oegb-kraken.energy"];
 const STORE = "octodave.v1.";
 const DIST_TO_GSP = { "10": "_A", "11": "_B", "12": "_C", "13": "_D", "14": "_E", "15": "_F", "16": "_G",
@@ -1302,11 +1312,18 @@ $("#forgetBtn").addEventListener("click", () => {
   show($("#dash"), false); show($("#periodControls"), false);
   openSetup(false);
 });
-$("#csvBtn").addEventListener("click", async () => {
-  if (!state.data) return;
-  const d = new Date(), pad = (n) => String(n).padStart(2, "0");
-  const name = "agile-usage-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "-" + state.days + "d" + ".csv";
-  const file = new File([App.csv(state.data)], name, { type: "text/csv" });
+$("#csvBtn").addEventListener("click", () => openCsvForm());
+$("#csvForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const r = csvRange(); if (!r) return;
+  $("#csvMsg").textContent = "Fetching your readings… a long range can take a minute.";
+  let data;
+  try { data = await App.analysis(1, false, r.from, false); }
+  catch (e) { $("#csvMsg").textContent = e.message; return; }
+  const rows = data.hh.filter(([ms]) => dayKey(new Date(ms)) <= r.to);
+  const name = "octodave-usage-" + r.from + "-to-" + r.to + ".csv";
+  const file = new File([App.csv({ hh: rows })], name, { type: "text/csv" });
+  $("#csvMsg").textContent = rows.length + " half-hours ready.";
   try {
     if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file] }); return; }
   } catch (e) { if (e.name === "AbortError") return; }
@@ -2730,6 +2747,24 @@ function wireBillCheck(loadBills, loadReadings) {
 }
 
 wireBillCheck(() => App.bills(), (from) => App.analysis(1, false, from, false));
+
+
+// CSV export for any date range (up to about 13 months back).
+function openCsvForm() {
+  const to = new Date(), from = new Date(); from.setDate(from.getDate() - state.days + 1);
+  const min = new Date(); min.setDate(min.getDate() - 395);
+  $("#f-csvfrom").value = ymd(from); $("#f-csvto").value = ymd(to);
+  for (const id of ["#f-csvfrom", "#f-csvto"]) { $(id).min = ymd(min); $(id).max = ymd(to); }
+  $("#csvMsg").textContent = ""; show($("#csvForm"), true);
+}
+function csvRange() {
+  const from = $("#f-csvfrom").value, to = $("#f-csvto").value;
+  const min = new Date(); min.setDate(min.getDate() - 395);
+  if (!from || !to || to < from) { $("#csvMsg").textContent = "Pick a start date on or before the end date."; return null; }
+  if (from < ymd(min)) { $("#csvMsg").textContent = "The earliest start is " + fmtD(ymd(min)) + "."; return null; }
+  return { from, to };
+}
+$("#csvCancel").addEventListener("click", () => show($("#csvForm"), false));
 
 // ---------- start ----------
 function startDashboard(fresh) {
