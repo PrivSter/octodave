@@ -67,7 +67,7 @@ Settled readings arrive about a day late, so history fills the half-hours since 
 ### 2.7 Day drill-down (done in 1.14)
 Tap a day in the daily chart to open that day: half-hourly bars coloured by band, kWh, £, average p/kWh and band mix. Include **today** from the Home Mini half-hours that "Today so far" already fetches, labelled as provisional (Home Mini estimate, settled data arrives the next day).
 
-### 2.8 Insights
+### 2.8 Insights (done in 1.15)
 - **Base load**: the always-on power in W, plus what it costs per month. Suggested method: a low percentile (for example the 10th) of half-hourly kWh over the period × 2 to get kW, priced at the period's average rate.
 - **Typical use window**: the hour with the largest share of usage ("04:30–05:30, 22% of recent usage"). That's a large share for a single early-morning hour. Showing it helps spot something on a timer that could move to a cheaper slot.
 

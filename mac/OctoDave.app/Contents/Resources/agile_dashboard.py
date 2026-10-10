@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.14"
+VERSION = "1.15"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -1423,6 +1423,8 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
 .btn:disabled { opacity: 0.45; cursor: default; }
 #dayTiles { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 @media (max-width: 560px) { #dayTiles { grid-template-columns: 1fr 1fr; } }
+#insTiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 560px) { #insTiles { grid-template-columns: 1fr; } }
 .bands-top { display: grid; gap: 8px; }
 .bandbar { display: flex; height: 16px; border-radius: 8px; overflow: hidden; background: var(--surface-2); }
 .bandbar span { display: block; height: 100%; }
@@ -1642,6 +1644,19 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
         <button type="button" class="btn" id="bandsReset">Reset to 10p / 25p</button>
         <span class="muted small" id="bandsError"></span>
       </form>
+    </section>
+
+    <section class="panel" aria-labelledby="insTitle">
+      <div class="panel-head">
+        <h2 id="insTitle">Insights</h2>
+        <span class="muted small" id="insSpan"></span>
+      </div>
+      <div class="billtiles" id="insTiles"></div>
+      <p class="notice" id="insNote" hidden></p>
+      <div class="legend"><span><i style="background:var(--off);opacity:.6"></i>Average use each half-hour</span><span><i style="background:var(--accent)"></i>Busiest hour</span><span><i style="background:var(--peak);height:2px;vertical-align:3px"></i>Always-on level</span></div>
+      <div class="chart" id="insChart"></div>
+      <p class="readout muted" id="insReadout">Click a bar for that half-hour's average.</p>
+      <details class="workings"><summary>How these are worked out</summary><dl id="insWorkings"></dl></details>
     </section>
 
     <section class="panel" aria-labelledby="heatTitle">
@@ -1909,7 +1924,7 @@ function renderAll() {
   renderShift();
   renderWorst(prep);
   renderHeatmap(prep);
-  renderComparison(data, prep); renderBands(prep, getBands()); renderDay();
+  renderComparison(data, prep); renderBands(prep, getBands()); renderDay(); renderInsights(prep);
 
   const s = state.status;
   $("#settingsLine").textContent = "OctoDave " + s.version + " (from " + s.code_from + ") · Key " + (s.key_hint || "saved") + " in " + s.key_store + " · MPAN " + s.mpan +
@@ -2806,6 +2821,138 @@ $("#dayNext").addEventListener("click", () => { const i = state.prep.days.findIn
 
 let dayResize = null;
 window.addEventListener("resize", () => { clearTimeout(dayResize); dayResize = setTimeout(() => { if (state.dayOpen) renderDay(); }, 200); });
+
+// ---------- insights (same in both apps) ----------
+// Base load: the always-on power, from a low percentile of half-hourly use. Busiest hour: the hour of the
+// day (any two neighbouring half-hours) with the largest share of use. Both use complete days only.
+const BASE_PCTL = 0.10;
+
+function computeInsights(prep) {
+  const todayK = dayKey(new Date());
+  const days = prep.days.filter((g) => g.day !== todayK);
+  const rows = days.flatMap((g) => g.rows);
+  if (rows.length < 48) return null;
+  const ks = rows.map((r) => r.k).sort((a, b) => a - b);
+  const baseK = ks[Math.floor((ks.length - 1) * BASE_PCTL)];
+  const totalK = rows.reduce((a, r) => a + r.k, 0);
+  const priced = rows.filter((r) => r.p != null);
+  const pricedK = priced.reduce((a, r) => a + r.k, 0);
+  const avgP = pricedK > 0 ? priced.reduce((a, r) => a + r.k * r.p, 0) / pricedK : null;
+  // Always-on use runs round the clock, so it's priced at the plain average of the half-hourly prices.
+  const flatP = priced.length ? priced.reduce((a, r) => a + r.p, 0) / priced.length : null;
+  // Average day: kWh and cost for each half-hour of the day.
+  const prof = Array.from({ length: 48 }, () => ({ k: 0, c: 0, pk: 0, n: 0 }));
+  for (const r of rows) {
+    const s = prof[r.slot]; s.k += r.k; s.n += 1;
+    if (r.p != null) { s.c += r.k * r.p; s.pk += r.k; }
+  }
+  let best = 0, bestK = -1;
+  for (let i = 0; i < 48; i++) {
+    const k = prof[i].k + prof[(i + 1) % 48].k;
+    if (k > bestK) { bestK = k; best = i; }
+  }
+  const w = [prof[best], prof[(best + 1) % 48]];
+  const wPk = w[0].pk + w[1].pk;
+  return {
+    days: days.length, from: days[0].day, to: days[days.length - 1].day,
+    baseK, baseW: baseK * 2000, baseDayK: baseK * 48,
+    baseShare: totalK > 0 ? (baseK * rows.length) / totalK : 0,
+    baseMonthP: flatP == null ? null : baseK * 48 * (365 / 12) * flatP,
+    avgP, flatP, totalK,
+    win: best, winShare: totalK > 0 ? bestK / totalK : 0,
+    winP: wPk > 0 ? (w[0].c + w[1].c) / wPk : null,
+    prof: prof.map((s) => ({ k: s.n ? s.k / s.n : 0, p: s.pk > 0 ? s.c / s.pk : null })),
+  };
+}
+
+const slotTime = (s) => String(Math.floor(s / 2) % 24).padStart(2, "0") + ":" + (s % 2 ? "30" : "00");
+
+function renderInsights(prep) {
+  if (!prep) return;
+  const ins = computeInsights(prep);
+  const tiles = $("#insTiles"); tiles.replaceChildren();
+  const box = $("#insChart");
+  if (!ins) {
+    tiles.innerHTML = '<p class="muted small">Not enough complete days in this period yet.</p>';
+    box.replaceChildren(); $("#insWorkings").replaceChildren(); return;
+  }
+  const fmt = (k) => new Date(k + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  $("#insSpan").textContent = ins.days + " complete day" + (ins.days === 1 ? "" : "s") + ", " + fmt(ins.from) + " – " + fmt(ins.to);
+  const tile = (label, value, sub) => {
+    const t = document.createElement("div"); t.className = "billtile";
+    t.innerHTML = '<span class="label"></span><span class="value"></span><span class="sub"></span>';
+    t.children[0].textContent = label; t.children[1].textContent = value; t.children[2].textContent = sub;
+    tiles.appendChild(t);
+  };
+  tile("Always on", "about " + Math.round(ins.baseW) + " W",
+    ins.baseDayK.toFixed(1) + " kWh a day, " + Math.round(ins.baseShare * 100) + "% of your use" +
+    (ins.baseMonthP != null ? ", about " + pounds(ins.baseMonthP) + " a month" : ""));
+  const winEnd = ins.win + 2;
+  tile("Busiest hour", slotTime(ins.win) + "–" + slotTime(winEnd),
+    Math.round(ins.winShare * 100) + "% of your use" +
+    (ins.winP != null && ins.avgP != null ? ", at " + pence(ins.winP) + " on average against " + pence(ins.avgP) + " overall" : ""));
+  const note = $("#insNote");
+  if (ins.winP != null && ins.avgP != null && ins.winP > ins.avgP * 1.15) {
+    note.textContent = "Your busiest hour costs more than your average. If something in it runs on a timer, moving it to a cheaper slot would save money.";
+  } else if (ins.win <= 12 || ins.win >= 46) {
+    note.textContent = "Your busiest hour is overnight. Worth checking what's on a timer then, such as hot water or heating.";
+  } else note.textContent = "";
+  show(note, !!note.textContent);
+
+  // Average day: kWh per half-hour, busiest hour highlighted, base load as a dashed line.
+  const L = 40, R = 6, T = 10, B = 24, H = 170;
+  const W = Math.max(300, Math.floor(box.clientWidth || 600));
+  const maxK = Math.max(...ins.prof.map((s) => s.k), ins.baseK, 0.1);
+  const step = niceMax(maxK / 4), max = step * 4;
+  const slotW = (W - L - R) / 48, bw = Math.max(2, slotW * 0.74);
+  const x = (s) => L + s * slotW, y = (v) => T + (H - T - B) * (1 - v / max);
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": "Average use for each half-hour of the day" });
+  for (let i = 0; i <= 4; i++) {
+    const v = step * i;
+    svg.appendChild(svgEl("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: "var(--line)", "stroke-width": 1 }));
+    const t = svgEl("text", { x: L - 5, y: y(v) + 4, "text-anchor": "end" }); t.textContent = Number.isInteger(v) ? String(v) : v.toFixed(v < 1 ? 2 : 1); svg.appendChild(t);
+  }
+  const unit = svgEl("text", { x: L - 5, y: H - 7, "text-anchor": "end" }); unit.textContent = "kWh"; svg.appendChild(unit);
+  for (const h of [0, 6, 12, 18]) {
+    const t = svgEl("text", { x: x(h * 2), y: H - 7, "text-anchor": "start" }); t.textContent = String(h).padStart(2, "0") + ":00"; svg.appendChild(t);
+  }
+  const inWin = (s) => s === ins.win || s === (ins.win + 1) % 48;
+  ins.prof.forEach((s, i) => {
+    const grp = svgEl("g", { "data-i": i, style: "cursor:pointer" });
+    grp.appendChild(svgEl("rect", { x: x(i), width: slotW, y: T, height: H - T - B, fill: "transparent" }));
+    grp.appendChild(svgEl("rect", { x: x(i) + (slotW - bw) / 2, width: bw, y: y(s.k), height: Math.max(0, y(0) - y(s.k)), rx: 1,
+      fill: inWin(i) ? "var(--accent)" : "var(--off)", "fill-opacity": inWin(i) ? 1 : 0.6 }));
+    const tip = svgEl("title", {}); tip.textContent = insSlotText(i, s); grp.appendChild(tip);
+    svg.appendChild(grp);
+  });
+  svg.appendChild(svgEl("line", { x1: L, x2: W - R, y1: y(ins.baseK), y2: y(ins.baseK), stroke: "var(--peak)", "stroke-width": 1.5, "stroke-dasharray": "5 4" }));
+  svg.addEventListener("click", (ev) => {
+    const grp = ev.target.closest("g[data-i]");
+    if (grp) { const i = Number(grp.dataset.i); $("#insReadout").textContent = insSlotText(i, ins.prof[i]); }
+  });
+  box.replaceChildren(svg);
+
+  const rows = [
+    ["Days used", ins.days + " complete days (today is left out until it's over)"],
+    ["Always on", "The 10th-percentile half-hour: " + ins.baseK.toFixed(3) + " kWh, × 2 = " + (ins.baseK * 2).toFixed(3) + " kW. Nine in ten half-hours use at least this much."],
+    ["Always-on cost", ins.baseMonthP == null ? "No prices for this period" : ins.baseDayK.toFixed(2) + " kWh a day × 30.4 days × " + pence(ins.flatP) + " (the average of every half-hour's price, since it runs round the clock) = " + pounds(ins.baseMonthP) + " a month (energy only)"],
+    ["Busiest hour", "The two neighbouring half-hours with the most use across all the days: " + slotTime(ins.win) + "–" + slotTime(ins.win + 2) + ", " + Math.round(ins.winShare * 100) + "% of " + ins.totalK.toFixed(0) + " kWh"],
+  ];
+  const dl = $("#insWorkings"); dl.replaceChildren();
+  for (const [k, v] of rows) {
+    const dt = document.createElement("dt"); dt.textContent = k;
+    const dd = document.createElement("dd"); dd.textContent = v;
+    dl.append(dt, dd);
+  }
+}
+
+function insSlotText(i, s) {
+  return slotTime(i) + "–" + slotTime(i + 1) + ": " + s.k.toFixed(2) + " kWh on average (" + Math.round(s.k * 2000) + " W)" +
+    (s.p != null ? ", average price " + pence(s.p) : "");
+}
+
+let insResize = null;
+window.addEventListener("resize", () => { clearTimeout(insResize); insResize = setTimeout(() => { if (state.prep) renderInsights(state.prep); }, 200); });
 
 // ---------- start ----------
 function startDashboard(fresh) {
