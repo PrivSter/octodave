@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.18"
+VERSION = "1.18.1"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -1164,15 +1164,17 @@ class App:
     def first_reading(self):
         """Start of the earliest half-hourly reading Octopus holds for this meter. Saved once found."""
         serial = self.cfg.get("serial")
-        if self.cfg.get("first_reading_ms") and self.cfg.get("first_reading_serial") == serial:
-            return {"first_ms": self.cfg["first_reading_ms"]}
+        if self.cfg.get("first_read_ms") and self.cfg.get("first_read_serial") == serial:
+            return {"first_ms": self.cfg["first_read_ms"]}
+        # Without period_from Octopus only looks back about a week, so ask from long before smart meters.
         data = self.octo.request("/v1/electricity-meter-points/%s/meters/%s/consumption/" % (self.cfg["mpan"], serial),
-                                 {"page_size": 1, "order_by": "period"})
+                                 {"page_size": 1, "order_by": "period", "period_from": "2010-01-01T00:00:00Z"})
         rows = data.get("results") or []
         if not rows or not rows[0].get("interval_start"):
             return {"first_ms": None}
         ms = parse_ts(rows[0]["interval_start"]) * 1000
-        cfg = dict(self.cfg, first_reading_ms=ms, first_reading_serial=serial)
+        cfg = dict(self.cfg, first_read_ms=ms, first_read_serial=serial)
+        cfg.pop("first_reading_ms", None); cfg.pop("first_reading_serial", None)  # 1.18 saved a wrong date
         save_config(cfg)
         with self.lock:
             self.cfg = cfg
