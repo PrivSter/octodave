@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.16"
+VERSION = "1.17"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -439,6 +439,31 @@ def pick_comparison_products(products):
     return picks, agile
 
 
+# Tariffs that need extra equipment, shown only when asked for and labelled with what they need.
+EQUIPMENT = [
+    ("Cosy Octopus", r"COSY-", "a heat pump"),
+    ("Snug Octopus", r"SNUG-", "electric storage heaters"),
+    ("Octopus Go", r"GO-", "an electric car and home charger"),
+    ("Intelligent Octopus Go", r"(IOG|INTELLI-GO|INTELLI-VAR)-", "a compatible electric car or charger"),
+    ("Octopus Flux", r"FLUX-IMPORT-", "solar panels and a home battery"),
+    ("Intelligent Octopus Flux", r"INTELLI-FLUX-IMPORT-", "solar panels and a compatible home battery"),
+]
+
+
+def pick_equipment_products(products):
+    base = [p for p in products
+            if (p.get("direction") or "IMPORT").upper() == "IMPORT"
+            and not p.get("is_business") and not p.get("is_prepay")]
+    out = []
+    for label, prefix, needs in EQUIPMENT:
+        cands = [p for p in base if re.match(prefix, (p.get("code") or "").upper())
+                 and not re.search(r"LOYAL|OEV|EV-SAVER", (p.get("code") or "").upper())]
+        pick = _newest([p for p in cands if p.get("is_variable")]) or _newest(cands)
+        if pick:
+            out.append((label, pick, needs))
+    return out
+
+
 def region_tariff_code(octo, product_code, region):
     detail = octo.request("/v1/products/%s/" % product_code)
     by_region = (detail.get("single_register_electricity_tariffs") or {}).get(region) or {}
@@ -564,6 +589,7 @@ class App:
             "budget_p": self.cfg.get("budget_p"),
             "band_low_p": self.cfg.get("band_low_p", BAND_DEFAULTS[0]),
             "band_high_p": self.cfg.get("band_high_p", BAND_DEFAULTS[1]),
+            "show_equipment": bool(self.cfg.get("show_equipment")),
             "region": (self.cfg.get("region") or "").strip("_"),
             "host": self.octo.host if self.octo else None,
             "live_available": bool(self.cfg.get("account") or self.cfg.get("device_id")),
@@ -663,6 +689,8 @@ class App:
             if not (-20 <= low <= 100 and low < high <= 150):
                 raise ApiError("Low must be below High, and both between -20p and 150p.", 400)
             cfg["band_low_p"], cfg["band_high_p"] = low, high
+        if "show_equipment" in body:
+            cfg["show_equipment"] = bool(body.get("show_equipment"))
         save_config(cfg)
         with self.lock:
             self.cfg = cfg
@@ -725,9 +753,10 @@ class App:
 
     # -- analysis -------------------------------------------------------------
 
-    def analysis(self, days, refresh=False, frm=None, compare=True):
+    def analysis(self, days, refresh=False, frm=None, compare=True, equip=False):
         """History from `days` ago, or from local midnight on date `frm` (YYYY-MM-DD) when given.
-        compare=False skips the other-tariff comparison (used by the billing-month forecast)."""
+        compare=False skips the other-tariff comparison (used by the billing-month forecast);
+        equip=True adds the tariffs that need extra equipment to it."""
         days = max(1, min(int(days), 366))
         if frm:
             try:
@@ -738,17 +767,17 @@ class App:
             days = (today - start).days
             if not 0 <= days <= 400:
                 raise ApiError("That start date is out of range.", 400)
-        key = (frm or days, bool(compare))
+        key = (frm or days, bool(compare), bool(equip and compare))
         with self.lock:
             hit = self.analysis_cache.get(key)
         if hit and not refresh and time.time() - hit[0] < ANALYSIS_TTL:
             return hit[1]
-        data = self._build_analysis(days, frm, compare)
+        data = self._build_analysis(days, frm, compare, equip)
         with self.lock:
             self.analysis_cache[key] = (time.time(), data)
         return data
 
-    def _build_analysis(self, days, frm=None, compare=True):
+    def _build_analysis(self, days, frm=None, compare=True, equip=False):
         octo, cfg = self.octo, self.cfg
         now = time.time()
         if frm:
@@ -862,7 +891,10 @@ class App:
         }]
 
         picks, _ = pick_comparison_products(self.products()) if compare else ([], None)
-        for label, product in picks:
+        picks = [(label, product, None) for label, product in picks]
+        if compare and equip:
+            picks += pick_equipment_products(self.products())
+        for label, product, needs in picks:
             try:
                 code, full_name = region_tariff_code(octo, product["code"], cfg["region"])
                 units = fetch_rates(octo, code, "standard-unit-rates", t0, t1)
@@ -884,10 +916,11 @@ class App:
                     "label": label, "name": full_name, "code": code,
                     "energy_p": round(energy, 2), "standing_p": round(st_total, 2),
                     "total_p": round(energy + st_total, 2),
-                    "coverage": round(1 - miss / len(times), 4), "actual": False,
+                    "coverage": round(1 - miss / len(times), 4), "actual": False, "needs": needs,
                 })
             except ApiError as e:
-                comparisons.append({"label": label, "name": _name(product), "error": str(e), "actual": False})
+                comparisons.append({"label": label, "name": _name(product), "error": str(e), "actual": False,
+                                    "needs": needs})
 
         return {
             "generated": int(now * 1000),
@@ -1278,7 +1311,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/analysis":
                 refresh = (query.get("refresh") or ["0"])[0] == "1"
                 compare = (query.get("compare") or ["1"])[0] != "0"
-                return self._json(200, APP.analysis(days, refresh, frm, compare))
+                equip = (query.get("equip") or ["0"])[0] == "1"
+                return self._json(200, APP.analysis(days, refresh, frm, compare, equip))
             if path == "/api/live":
                 return self._json(200, APP.live())
             if path == "/api/today":
@@ -1438,6 +1472,9 @@ td.r, th.r { text-align: right; font-variant-numeric: tabular-nums; }
 .table-wrap { overflow-x: auto; }
 
 /* Comparison */
+.cmp-row .name span.needs { display: inline-block; margin-top: 4px; padding: 1px 8px; border-radius: 999px; font-size: 0.74rem; font-weight: 600; color: var(--ink); background: color-mix(in srgb, var(--off) 20%, transparent); }
+.cmp-equip { display: flex; gap: 8px; align-items: flex-start; font-size: 0.9rem; cursor: pointer; }
+.cmp-equip input { margin-top: 3px; }
 .cmp { display: grid; gap: 12px; }
 .cmp-row { display: grid; grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) auto; gap: 6px 16px; align-items: center; }
 .cmp-row .name b { display: block; }
@@ -1740,7 +1777,9 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
         <span class="muted small" id="cmpPeriod"></span>
       </div>
       <div class="cmp" id="cmp"></div>
-      <p class="muted small">Includes standing charges. Leaves out tariffs that need an EV, heat pump, storage heaters, solar or a battery. Where Octopus hasn't published a price for part of the period, the nearest published price is used and the row says so.</p>
+      <label class="cmp-equip"><input type="checkbox" id="cmpEquip"> Also show tariffs that need extra equipment (heat pump, storage heaters, battery or electric car)</label>
+      <p class="muted small" id="cmpEquipNote" hidden>Those are priced on your current half-hourly use. With the equipment your use would change (storage heaters, for example, charge in the cheap overnight hours), so treat them as a rough guide and check Octopus's eligibility rules before switching.</p>
+      <p class="muted small">Includes standing charges. Where Octopus hasn't published a price for part of the period, the nearest published price is used and the row says so.</p>
     </section>
 
     <div class="notice" id="dashNote" hidden></div>
@@ -1902,6 +1941,13 @@ $("#refreshBtn").addEventListener("click", () => { loadAnalysis(true); loadAhead
 // ---------- analysis ----------
 const billDay = () => (state.status && state.status.bill_day) || 15;
 function periodQuery() { return "days=" + state.days; }
+const showEquip = () => !!(state.status && state.status.show_equipment);
+$("#cmpEquip").addEventListener("change", async (ev) => {
+  $("#cmp").innerHTML = '<span class="loading">Working out the costs…</span>';
+  try { state.status = await api("/api/prefs", { method: "POST", body: JSON.stringify({ show_equipment: ev.target.checked }) }); }
+  catch (e) { ev.target.checked = showEquip(); return; }
+  loadAnalysis(false);
+});
 async function loadBill(refresh) {
   const bill = billDates(billDay());
   // Fetch from at least 92 days back: the weather fit needs more days than the two billing months.
@@ -1926,7 +1972,7 @@ async function loadAnalysis(refresh) {
   $("#tiles").innerHTML = '<div class="tile"><span class="loading">Fetching your half-hourly data from Octopus…</span></div>';
   $("#refreshBtn").disabled = true;
   try {
-    state.data = await api("/api/analysis?" + periodQuery() + (refresh ? "&refresh=1" : ""));
+    state.data = await api("/api/analysis?" + periodQuery() + (showEquip() ? "&equip=1" : "") + (refresh ? "&refresh=1" : ""));
     renderAll();
   } catch (e) {
     $("#tiles").innerHTML = "";
@@ -2125,6 +2171,8 @@ function renderHeatmap(prep) {
 
 function renderComparison(data, prep) {
   const rows = data.comparisons;
+  $("#cmpEquip").checked = showEquip();
+  show($("#cmpEquipNote"), rows.some((r) => r.needs));
   const actual = rows.find((r) => r.actual);
   const valid = rows.filter((r) => r.total_p != null);
   const max = Math.max(...valid.map((r) => r.total_p), 1);
@@ -2137,6 +2185,7 @@ function renderComparison(data, prep) {
     const name = document.createElement("div"); name.className = "name";
     const b = document.createElement("b"); b.textContent = r.label; name.appendChild(b);
     const sp = document.createElement("span"); sp.textContent = r.name || ""; name.appendChild(sp);
+    if (r.needs) { const nd = document.createElement("span"); nd.className = "needs"; nd.textContent = "Needs " + r.needs; name.appendChild(nd); }
     const barCell = document.createElement("div"); barCell.className = "bar-cell";
     const amt = document.createElement("div"); amt.className = "amt";
     if (r.error) {
@@ -3162,7 +3211,7 @@ function startDashboard(fresh) {
 # App mode: stop after this long with no sign of an open dashboard tab. Safari pauses the timers of
 # background tabs, so an open but unwatched tab can go quiet; an hour keeps that from stopping the app.
 IDLE_LIMIT = 60 * 60
-PREF_KEYS = ("budget_p", "band_low_p", "band_high_p")
+PREF_KEYS = ("budget_p", "band_low_p", "band_high_p", "show_equipment")
 BAND_DEFAULTS = (10, 25)  # pence: Low is under the first, High is the second and over
 
 
