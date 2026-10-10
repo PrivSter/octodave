@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.17.1"
+VERSION = "1.18"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -1159,6 +1159,25 @@ class App:
         self.ahead_cache = (time.time(), out)
         return out
 
+    # -- first reading ----------------------------------------------------------
+
+    def first_reading(self):
+        """Start of the earliest half-hourly reading Octopus holds for this meter. Saved once found."""
+        serial = self.cfg.get("serial")
+        if self.cfg.get("first_reading_ms") and self.cfg.get("first_reading_serial") == serial:
+            return {"first_ms": self.cfg["first_reading_ms"]}
+        data = self.octo.request("/v1/electricity-meter-points/%s/meters/%s/consumption/" % (self.cfg["mpan"], serial),
+                                 {"page_size": 1, "order_by": "period"})
+        rows = data.get("results") or []
+        if not rows or not rows[0].get("interval_start"):
+            return {"first_ms": None}
+        ms = parse_ts(rows[0]["interval_start"]) * 1000
+        cfg = dict(self.cfg, first_reading_ms=ms, first_reading_serial=serial)
+        save_config(cfg)
+        with self.lock:
+            self.cfg = cfg
+        return {"first_ms": ms}
+
     # -- weather ------------------------------------------------------------------
 
     def _weather_place(self):
@@ -1317,6 +1336,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, APP.live())
             if path == "/api/today":
                 return self._json(200, APP.today())
+            if path == "/api/first-reading":
+                return self._json(200, APP.first_reading())
             if path == "/api/weather":
                 return self._json(200, APP.weather())
             if path == "/api/ahead":
@@ -2048,6 +2069,11 @@ function renderAll() {
   const s = state.status;
   $("#settingsLine").textContent = "OctoDave " + s.version + " (from " + s.code_from + ") · Key " + (s.key_hint || "saved") + " in " + s.key_store + " · MPAN " + s.mpan +
     (s.account ? " · " + s.account : "") + (data.tariff_history.length ? " · " + data.tariff_history.map((h) => h.code).join(", ") : "");
+
+  // First half-hourly reading Octopus holds for this meter (looked up once, then remembered).
+  api("/api/first-reading").then((r) => r.first_ms).then((ms) => {
+    if (ms) $("#settingsLine").textContent += " · Half-hourly readings since " + new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+  }).catch(() => {});
   const notes = (data.notes || []).slice();
   if (data.missing_prices) notes.push(data.missing_prices + " half-hours had no published price and were left out of costs.");
   $("#dashNote").textContent = notes.join(" ");

@@ -453,7 +453,7 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
         <button type="button" class="btn" id="editBtn">Change details</button>
         <button type="button" class="btn danger" id="forgetBtn">Forget my details</button>
       </span>
-      <span>OctoDave for iPhone 1.17.1</span>
+      <span>OctoDave for iPhone 1.18</span>
     </footer>
   </div>
 </div>
@@ -466,7 +466,7 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
 // your details in this app's local storage. No server, no third parties.
 // ======================================================================
 
-const VERSION = "1.17.1";
+const VERSION = "1.18";
 const API_HOSTS = ["https://api.octopus.energy", "https://api.oegb-kraken.energy"];
 const STORE = "octodave.v1.";
 const DIST_TO_GSP = { "10": "_A", "11": "_B", "12": "_C", "13": "_D", "14": "_E", "15": "_F", "16": "_G",
@@ -834,6 +834,20 @@ const App = {
     }
     this.weatherCache = { at: Date.now(), data };
     return data;
+  },
+
+  // Start of the earliest half-hourly reading Octopus holds for this meter. Saved once found.
+  async firstReading() {
+    const serial = this.cfg.serial;
+    if (this.cfg.first_reading_ms && this.cfg.first_reading_serial === serial) return this.cfg.first_reading_ms;
+    const data = await this.octo.request("/v1/electricity-meter-points/" + this.cfg.mpan + "/meters/" + serial + "/consumption/",
+      { params: { page_size: 1, order_by: "period" } });
+    const row = (data.results || [])[0];
+    if (!row || !row.interval_start) return null;
+    const ms = parseTs(row.interval_start) * 1000;
+    this.cfg.first_reading_ms = ms; this.cfg.first_reading_serial = serial;
+    save("config", this.cfg);
+    return ms;
   },
 
   setShowEquipment(on) {
@@ -1361,6 +1375,11 @@ function renderAll() {
   const s = App.status();
   $("#settingsLine").textContent = "Key " + (s.key_hint || "saved") + " on this phone · MPAN " + s.mpan +
     (s.account ? " · " + s.account : "") + (data.tariff_history.length ? " · " + data.tariff_history.map((h) => h.code).join(", ") : "");
+
+  // First half-hourly reading Octopus holds for this meter (looked up once, then remembered).
+  App.firstReading().then((ms) => {
+    if (ms) $("#settingsLine").textContent += " · Half-hourly readings since " + new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+  }).catch(() => {});
   const notes = (data.notes || []).slice();
   if (data.missing_prices) notes.push(data.missing_prices + " half-hours had no published price and were left out of costs.");
   $("#dashNote").textContent = notes.join(" ");
