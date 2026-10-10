@@ -73,7 +73,7 @@ Tap a day in the daily chart to open that day: half-hourly bars coloured by band
 
 ---
 
-### 2.9 Weather-adjusted forecast
+### 2.9 Weather-adjusted forecast (done in 1.16)
 Dave's idea: usage rises when it's cold (electric heating, plus hot water and showers), so the billing-month forecast should allow for the weather.
 
 **What his data showed (checked 10 Oct 2026, 179 days from April):** below about 12°C each degree colder adds roughly 0.3 kWh a day (days under 10°C averaged 8.1 kWh against about 7 kWh at 13–20°C). The fit is weak so far (R² about 0.07) because the data is mostly spring and summer, with only 13 properly cold days; day-to-day use (showers, kettle, hot water) dominates. The effect should get clearer through the winter. 7 Oct (12°C) was his highest day in six months at 11.7 kWh.
@@ -87,7 +87,8 @@ Dave's idea: usage rises when it's cold (electric heating, plus hot water and sh
 **Data and privacy:**
 - Weather: Open-Meteo (free, no key). Forecast `api.open-meteo.com/v1/forecast`, history `archive-api.open-meteo.com/v1/archive`, both with `daily=temperature_2m_mean&timezone=Europe/London`. Both allow calls from web pages.
 - Location: the outward half of the postcode on the Octopus account (e.g. "AL10") turned into coordinates with `api.postcodes.io/outcodes/<outcode>`. Only the outward code leaves the app; never the full postcode, address or account details. Coordinates rounded to 0.1°.
-- Add those three hosts to `connect-src` in docs/index.html's CSP (and nothing else); the Mac app calls them from Python.
+- As built: one Open-Meteo forecast call with `past_days=92&forecast_days=16` covers both the fit and the days ahead, so the archive host isn't used; `connect-src` has `api.open-meteo.com` and `api.postcodes.io` only. The fit runs on the last 92 days. Thresholds to apply it: slope above zero, at least 30 days, 10 days below the base temperature, R² at least 0.03. The adjustment is relative to the 28-day window the average comes from, so the plain method is unchanged when the forecast matches that window's temperatures.
+- Originally planned: add those three hosts to `connect-src` in docs/index.html's CSP (and nothing else); the Mac app calls them from Python.
 
 ## 3. Later
 

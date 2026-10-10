@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.15"
+VERSION = "1.16"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -507,6 +507,19 @@ def halfhour_energy(rows, start):
 # The app
 # --------------------------------------------------------------------------
 
+def fetch_json(url, timeout=20):
+    """GET a JSON document from a public service (weather and postcode lookups), no credentials."""
+    req = urllib.request.Request(url, headers={"User-Agent": "OctoDave/" + VERSION, "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout, context=SSL_CTX) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def outcode_of(postcode):
+    """The outward half of a UK postcode ("AL10 9AB" -> "AL10"). Only this ever leaves the app."""
+    pc = re.sub(r"\s", "", (postcode or "").upper())
+    return pc[:-3] if 5 <= len(pc) <= 7 and re.fullmatch(r"[A-Z0-9]+", pc) else ""
+
+
 class App:
     def __init__(self, port):
         self.port = port
@@ -523,6 +536,7 @@ class App:
         self.today_cache = None
         self.today_at = 0.0
         self.ahead_cache = None
+        self.weather_cache = None
         self.current_rate_cache = {}
         self.agreement_extended = None
         self.last_seen = time.monotonic()
@@ -620,6 +634,7 @@ class App:
             self.live_cache = None
             self.today_cache = None
             self.ahead_cache = None
+            self.weather_cache = None
             self.current_rate_cache.clear()
         return self.status()
 
@@ -663,6 +678,7 @@ class App:
             self.live_cache = None
             self.today_cache = None
             self.ahead_cache = None
+            self.weather_cache = None
         return self.status()
 
     # -- tariff history -----------------------------------------------------
@@ -1110,6 +1126,54 @@ class App:
         self.ahead_cache = (time.time(), out)
         return out
 
+    # -- weather ------------------------------------------------------------------
+
+    def _weather_place(self):
+        """Outward postcode and rounded coordinates for the weather. Looked up once and saved."""
+        if self.cfg.get("wx_outcode") and self.cfg.get("wx_lat") is not None:
+            return {"outcode": self.cfg["wx_outcode"], "lat": self.cfg["wx_lat"], "lon": self.cfg["wx_lon"]}
+        account = self.cfg.get("account")
+        if not account:
+            raise ApiError("add your account number under Change details so the app knows your area", None, "no_account")
+        acc = self.octo.request("/v1/accounts/%s/" % account)
+        postcode = ""
+        for prop in acc.get("properties", []):
+            if any(emp.get("mpan") == self.cfg["mpan"] for emp in prop.get("electricity_meter_points", [])):
+                postcode = prop.get("postcode") or ""
+        outcode = outcode_of(postcode)
+        if not outcode:
+            raise ApiError("the Octopus account doesn't list a postcode for this meter", None, "no_postcode")
+        res = fetch_json("https://api.postcodes.io/outcodes/" + urllib.parse.quote(outcode)).get("result") or {}
+        if res.get("latitude") is None:
+            raise ApiError("couldn't find where %s is" % outcode, None, "no_place")
+        place = {"outcode": outcode, "lat": round(res["latitude"], 1), "lon": round(res["longitude"], 1)}
+        cfg = dict(self.cfg, wx_outcode=place["outcode"], wx_lat=place["lat"], wx_lon=place["lon"])
+        save_config(cfg)
+        with self.lock:
+            self.cfg = cfg
+        return place
+
+    def weather(self):
+        """Daily mean temperatures for the last 92 days and the next 16, for the forecast's weather adjustment."""
+        hit = self.weather_cache
+        if hit and time.time() - hit[0] < (3 * 3600 if hit[1].get("available") else 15 * 60):
+            return hit[1]
+        try:
+            place = self._weather_place()
+            q = urllib.parse.urlencode({"latitude": place["lat"], "longitude": place["lon"], "daily": "temperature_2m_mean",
+                                        "timezone": "Europe/London", "past_days": 92, "forecast_days": 16})
+            daily = fetch_json("https://api.open-meteo.com/v1/forecast?" + q).get("daily") or {}
+            temps = {d: t for d, t in zip(daily.get("time") or [], daily.get("temperature_2m_mean") or []) if t is not None}
+            if not temps:
+                raise ApiError("the weather service returned no temperatures", None)
+            out = {"available": True, "outcode": place["outcode"], "temps": temps, "fetched": int(time.time() * 1000)}
+        except ApiError as e:
+            out = {"available": False, "reason": str(e)}
+        except Exception as e:  # network trouble: the forecast just goes without the weather
+            out = {"available": False, "reason": "couldn't get the weather (%s)" % e}
+        self.weather_cache = (time.time(), out)
+        return out
+
     # -- CSV ----------------------------------------------------------------------
 
     def csv(self, days, frm=None):
@@ -1219,6 +1283,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, APP.live())
             if path == "/api/today":
                 return self._json(200, APP.today())
+            if path == "/api/weather":
+                return self._json(200, APP.weather())
             if path == "/api/ahead":
                 return self._json(200, APP.ahead())
             if path == "/api/export.csv":
@@ -1559,6 +1625,7 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
         <span class="muted small" id="billSpan"></span>
       </div>
       <div class="billtiles" id="billTiles"><span class="loading">Working out your billing month…</span></div>
+      <p class="muted small" id="billWx" style="margin:0" hidden></p>
       <div class="budget" id="budgetBox">
         <div class="budget-head"><h3>Budget</h3><button type="button" class="btn" id="budgetEdit">Set budget</button></div>
         <form id="budgetForm" hidden novalidate>
@@ -1837,9 +1904,15 @@ const billDay = () => (state.status && state.status.bill_day) || 15;
 function periodQuery() { return "days=" + state.days; }
 async function loadBill(refresh) {
   const bill = billDates(billDay());
+  // Fetch from at least 92 days back: the weather fit needs more days than the two billing months.
+  const fitFrom = new Date(); fitFrom.setHours(0, 0, 0, 0); fitFrom.setDate(fitFrom.getDate() - 92);
+  const frm = fitFrom < bill.prev ? fitFrom : bill.prev;
   try {
-    const data = await api("/api/analysis?days=1&compare=0&from=" + ymd(bill.prev) + (refresh ? "&refresh=1" : ""));
-    state.forecast = computeForecast(data, bill);
+    const [data, wx] = await Promise.all([
+      api("/api/analysis?days=1&compare=0&from=" + ymd(frm) + (refresh ? "&refresh=1" : "")),
+      api("/api/weather").catch((e) => ({ reason: "couldn't get the weather (" + e.message + ")" })),
+    ]);
+    state.forecast = computeForecast(data, bill, wx);
     renderForecast(state.forecast, bill);
     renderBudget(state.forecast, state.status.budget_p);
   } catch (e) {
@@ -2189,6 +2262,66 @@ document.addEventListener("visibilitychange", () => {
   loadBill(false);
 });
 
+// ---------- weather (same in both apps) ----------
+// Fits daily kWh = intercept + slope × heating degrees (degrees below a base temperature) on the days that
+// have both readings and a temperature, trying base temperatures from 12°C to 15.5°C and keeping the best.
+// Used to adjust the billing-month forecast only when the readings show a real link.
+const WX_BASES = [12, 12.5, 13, 13.5, 14, 14.5, 15, 15.5];
+const WX_MIN_DAYS = 30, WX_MIN_COLD = 10, WX_MIN_R2 = 0.03;
+
+function fitWeather(data, temps) {
+  const todayK = dayKey(new Date());
+  const byDay = new Map();
+  for (const [ms, k] of data.hh) {
+    const key = dayKey(new Date(ms));
+    if (key >= todayK) continue;
+    const g = byDay.get(key) || { k: 0, n: 0 };
+    g.k += k; g.n += 1; byDay.set(key, g);
+  }
+  const pts = [];
+  for (const [key, g] of byDay) if (g.n >= 44 && temps[key] != null) pts.push([temps[key], g.k]);
+  if (pts.length < WX_MIN_DAYS) return { ok: false, n: pts.length, reason: "only " + pts.length + " days have both readings and weather so far (it needs " + WX_MIN_DAYS + ")" };
+  const n = pts.length, yBar = pts.reduce((a, p) => a + p[1], 0) / n;
+  const ssTot = pts.reduce((a, p) => a + (p[1] - yBar) ** 2, 0);
+  let best = null;
+  for (const base of WX_BASES) {
+    const xs = pts.map((p) => Math.max(0, base - p[0]));
+    const xBar = xs.reduce((a, v) => a + v, 0) / n;
+    let sxy = 0, sxx = 0;
+    xs.forEach((x, i) => { sxy += (x - xBar) * (pts[i][1] - yBar); sxx += (x - xBar) ** 2; });
+    if (sxx === 0) continue;
+    const slope = sxy / sxx, intercept = yBar - slope * xBar;
+    const ssRes = xs.reduce((a, x, i) => a + (pts[i][1] - (intercept + slope * x)) ** 2, 0);
+    const r2 = ssTot > 0 ? 1 - ssRes / ssTot : 0;
+    const cold = xs.filter((x) => x > 0).length;
+    if (!best || r2 > best.r2) best = { base, slope, intercept, r2, cold };
+  }
+  if (!best) return { ok: false, n, reason: "there haven't been any days cold enough to compare yet" };
+  const fit = Object.assign({ n }, best);
+  if (best.slope <= 0) return Object.assign(fit, { ok: false, reason: "your use doesn't go up on colder days in the readings so far" });
+  if (best.cold < WX_MIN_COLD) return Object.assign(fit, { ok: false, reason: "only " + best.cold + " days were colder than " + best.base + "°C (it needs " + WX_MIN_COLD + ")" });
+  if (best.r2 < WX_MIN_R2) return Object.assign(fit, { ok: false, reason: "the link between temperature and your use is too weak so far" });
+  return Object.assign(fit, { ok: true });
+}
+
+// The weather adjustment for the days left: compared with the 28 days the average comes from, each degree
+// colder (below the base temperature) adds `slope` kWh a day, priced at the same window's average rate.
+function weatherAdjust(fit, temps, winKeys, winKwh, avgEnergy, remainingKeys) {
+  const hdd = (t) => Math.max(0, fit.base - t);
+  const winT = winKeys.map((k) => temps[k]).filter((t) => t != null);
+  if (winT.length < Math.min(20, winKeys.length)) return { ok: false, reason: "no temperatures for the days the average comes from" };
+  const winHdd = winT.reduce((a, t) => a + hdd(t), 0) / winT.length;
+  const rate = winKwh > 0 ? avgEnergy / winKwh : 0;
+  let adjK = 0, days = 0, sumT = 0, lastK = null;
+  for (const k of remainingKeys) {
+    const t = temps[k];
+    if (t == null) continue;
+    adjK += fit.slope * (hdd(t) - winHdd); days += 1; sumT += t; lastK = k;
+  }
+  if (!days) return { ok: false, reason: "there's no forecast for the days left yet" };
+  return { ok: true, adjK, adjP: adjK * rate, days, avgT: sumT / days, winT: winT.reduce((a, t) => a + t, 0) / winT.length, rate, lastK, left: remainingKeys.length };
+}
+
 // ---------- billing month and forecast (same code in the Mac and iPhone apps) ----------
 const ymd = (d) => d.toLocaleDateString("en-CA");
 const fromKey = (k) => new Date(k + "T12:00:00");
@@ -2206,7 +2339,7 @@ function billDates(billDay, now) {
 
 // Forecast for the current billing month. Method (as Octo-Aid): actual cost so far, plus the average
 // daily energy cost over the last 28 days with data, plus the standing charge, for each day left.
-function computeForecast(data, bill) {
+function computeForecast(data, bill, wx) {
   const byDay = new Map();
   for (const [ms, k, p] of data.hh) {
     const key = dayKey(new Date(ms));
@@ -2232,14 +2365,47 @@ function computeForecast(data, bill) {
   const win = keys.filter((k) => dayDiff(fromKey(k), lastDate) < 28);
   const avgEnergy = win.reduce((a, k) => a + byDay.get(k).energy, 0) / win.length;
   const standingDay = st(lastKey);
-  const projected = actual + remaining * (avgEnergy + standingDay);
+  let projected = actual + remaining * (avgEnergy + standingDay);
+  // Weather: adjust the days left for how much colder or warmer the forecast is than the 28-day window.
+  let weather = null;
+  if (wx && wx.temps) {
+    const fit = fitWeather(data, wx.temps);
+    weather = { outcode: wx.outcode, fit };
+    if (fit.ok && remaining > 0) {
+      const remKeys = [];
+      for (let i = 0; i < remaining; i++) { const d = new Date(bill.start); d.setDate(d.getDate() + covered + i); remKeys.push(ymd(d)); }
+      const winKwh = win.reduce((a, k) => a + byDay.get(k).kwh, 0) / win.length;
+      weather.adj = weatherAdjust(fit, wx.temps, win, winKwh, avgEnergy, remKeys);
+      if (weather.adj.ok) projected += weather.adj.adjP;
+    }
+  } else if (wx && wx.reason) weather = { reason: wx.reason };
   const lastTotal = last.reduce((a, k) => a + cost(k), 0);
   const lastComplete = last.length >= lastLen - 1;
   const lastSamePoint = last.filter((k) => dayDiff(bill.prev, fromKey(k)) < covered).reduce((a, k) => a + cost(k), 0);
   const series = (list, from) => { let c = 0; return list.map((k) => { c += cost(k); return [dayDiff(from, fromKey(k)) + 1, c]; }); };
   return { totalDays, lastLen, covered, remaining, actual, actualKwh, avgEnergy, winDays: win.length,
-    winFrom: win[0], winTo: lastKey, standingDay, projected, lastTotal, lastComplete, lastSamePoint,
+    winFrom: win[0], winTo: lastKey, standingDay, projected, weather, lastTotal, lastComplete, lastSamePoint,
     lastDays: last.length, lastKey, cur: series(cur, bill.start), lastSeries: series(last, bill.prev) };
+}
+
+// Workings rows for the weather part of the forecast.
+function weatherRows(f) {
+  const w = f.weather;
+  if (!w) return [];
+  if (!w.fit) return [["Weather", "Not used: " + w.reason + "."]];
+  const fit = w.fit;
+  const fitTxt = fit.slope != null ? "From " + fit.n + " days of readings and temperatures for " + w.outcode + ": " +
+    (fit.slope > 0 ? "about " + fit.slope.toFixed(2) + " kWh more a day for each degree below " + fit.base + "°C" : "no rise on colder days") +
+    " (R² " + fit.r2.toFixed(2) + ", where 1 would be a perfect link)" : "";
+  if (!fit.ok) return [["Weather", "Not used: " + fit.reason + "."]].concat(fitTxt ? [["Weather fit", fitTxt]] : []);
+  if (!w.adj) return [["Weather fit", fitTxt], ["Weather", "No days left to adjust."]];
+  if (!w.adj.ok) return [["Weather fit", fitTxt], ["Weather", "Not used: " + w.adj.reason + "."]];
+  const a = w.adj, sign = (v) => (v >= 0 ? "+" : "−");
+  return [
+    ["Weather fit", fitTxt],
+    ["Weather ahead", "The forecast for " + a.days + " of the " + a.left + " days left averages " + a.avgT.toFixed(1) + "°C, against " + a.winT.toFixed(1) + "°C over the 28 days the average comes from"],
+    ["Weather adjustment", sign(a.adjK) + Math.abs(a.adjK).toFixed(1) + " kWh at " + pence(a.rate) + " = " + sign(a.adjP) + pounds(Math.abs(a.adjP)) + ", included in the forecast"],
+  ];
 }
 
 function renderForecast(f, bill) {
@@ -2247,6 +2413,12 @@ function renderForecast(f, bill) {
   const endD = new Date(bill.next); endD.setDate(endD.getDate() - 1);
   $("#billSpan").textContent = fmt(bill.start) + " – " + fmt(endD) + (f ? " · readings to " + fmt(fromKey(f.lastKey)) : "");
   const tiles = $("#billTiles"); tiles.replaceChildren();
+  const wxEl = $("#billWx"), wa = f && f.weather && f.weather.adj;
+  if (wa && wa.ok) {
+    wxEl.textContent = "Includes a weather adjustment of " + (wa.adjP >= 0 ? "+" : "−") + pounds(Math.abs(wa.adjP)) + ": the forecast for the next " +
+      wa.days + " day" + (wa.days === 1 ? "" : "s") + " averages " + wa.avgT.toFixed(1) + "°C, against " + wa.winT.toFixed(1) + "°C over the last 28.";
+    show(wxEl, true);
+  } else show(wxEl, false);
   const tile = (label, value, sub, subCls) => {
     const t = document.createElement("div"); t.className = "billtile";
     t.innerHTML = '<span class="label"></span><span class="value"></span><span class="sub"></span>';
@@ -2295,7 +2467,7 @@ function renderForecast(f, bill) {
   box.replaceChildren(svg);
 
   const rows = [
-    ["Method", "Actual so far, plus the average daily energy cost over the last 28 days with readings, plus the standing charge, for each day left"],
+    ["Method", "Actual so far, plus the average daily energy cost over the last 28 days with readings, plus the standing charge, for each day left" + (wa && wa.ok ? ", adjusted for the weather forecast" : "")],
     ["Readings used for the average", f.winDays + " days, " + fmt(fromKey(f.winFrom)) + " to " + fmt(fromKey(f.winTo))],
     ["Average daily energy cost", pounds(f.avgEnergy) + " (before standing charge)"],
     ["Standing charge", pence(f.standingDay) + " a day"],
@@ -2303,6 +2475,7 @@ function renderForecast(f, bill) {
     ["Days left", f.remaining + " × " + pounds(f.avgEnergy + f.standingDay) + " = " + pounds(f.remaining * (f.avgEnergy + f.standingDay))],
     ["Forecast", pounds(f.projected)],
     ["Last billing month", f.lastComplete ? pounds(f.lastTotal) + " over " + f.lastDays + " days" : "Only " + f.lastDays + " days of readings"],
+    ...weatherRows(f),
     ["Not included", "Today, which is only part-way through. Yesterday may be a Home Mini estimate until Octopus's settled readings arrive"],
   ];
   const dl = $("#billWorkings"); dl.replaceChildren();
