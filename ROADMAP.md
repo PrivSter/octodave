@@ -64,7 +64,7 @@ In or next to the Right now panel:
 ### 2.6 Fill today and yesterday from the Home Mini (done in 1.11)
 Settled readings arrive about a day late, so history fills the half-hours since the last one (up to three days) from Home Mini telemetry, marked as estimates until Octopus's readings replace them.
 
-### 2.7 Day drill-down
+### 2.7 Day drill-down (done in 1.14)
 Tap a day in the daily chart to open that day: half-hourly bars coloured by band, kWh, £, average p/kWh and band mix. Include **today** from the Home Mini half-hours that "Today so far" already fetches, labelled as provisional (Home Mini estimate, settled data arrives the next day).
 
 ### 2.8 Insights

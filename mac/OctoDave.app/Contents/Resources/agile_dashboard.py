@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.13.1"
+VERSION = "1.14"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -1418,6 +1418,11 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
 @media (min-width: 900px) { .glance { display: flex; flex-wrap: wrap; gap: 4px 16px; } .glance[hidden] { display: none; } .glance p + p { border-left: 1px solid var(--line); padding-left: 16px; } }
 .glance b { font-family: var(--font-num); font-weight: 650; }
 .glance .band-low { color: var(--good); } .glance .band-high { color: var(--peak); }
+#dayPanel[hidden] { display: none; }
+.daynav { display: flex; flex-wrap: wrap; gap: 6px; }
+.btn:disabled { opacity: 0.45; cursor: default; }
+#dayTiles { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 560px) { #dayTiles { grid-template-columns: 1fr 1fr; } }
 .bands-top { display: grid; gap: 8px; }
 .bandbar { display: flex; height: 16px; border-radius: 8px; overflow: hidden; background: var(--surface-2); }
 .bandbar span { display: block; height: 100%; }
@@ -1579,6 +1584,7 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
       </div>
       <div class="legend"><span><i style="background:var(--peak)"></i>4–7pm</span><span><i style="background:var(--off)"></i>Rest of the day</span><span>Daily energy cost, excluding standing charge</span></div>
       <div class="chart" id="dailyChart"></div>
+      <p class="readout muted" id="dailyReadout">Click a day to see its half-hours.</p>
       <div class="sim">
         <div>
           <label for="shift"><b>If you moved <span id="shiftPct" class="num">50%</span> of your 4–7pm use</b> to the cheapest half-hours of the same day</label>
@@ -1591,6 +1597,24 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
         <h3 class="small muted" style="margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em">Most expensive evenings</h3>
         <div class="table-wrap"><table id="worstTable"></table></div>
       </div>
+    </section>
+
+    <section class="panel" id="dayPanel" aria-labelledby="dayTitle" hidden>
+      <div class="panel-head">
+        <h2 id="dayTitle">Day</h2>
+        <div class="daynav">
+          <button type="button" class="btn" id="dayPrev">‹ Previous</button>
+          <button type="button" class="btn" id="dayNext">Next ›</button>
+          <button type="button" class="btn" id="dayClose">Close</button>
+        </div>
+      </div>
+      <p class="notice" id="dayEst" hidden></p>
+      <div class="billtiles" id="dayTiles"></div>
+      <div class="bandbar" id="dayBandBar"></div>
+      <p class="muted small" id="dayBandText" style="margin:0"></p>
+      <div class="legend"><span><i style="background:var(--good)"></i>Low</span><span><i style="background:var(--off)"></i>Mid</span><span><i style="background:var(--peak)"></i>High</span><span><i style="background:var(--ink);opacity:.55;height:2px;vertical-align:3px"></i>Price (right-hand scale)</span><span>Shaded: 4–7pm</span></div>
+      <div class="chart" id="dayChart"></div>
+      <p class="readout muted" id="dayReadout"></p>
     </section>
 
     <section class="panel" aria-labelledby="bandsTitle">
@@ -1706,6 +1730,7 @@ const pence = (p) => (p == null ? "–" : p.toFixed(1) + "p");
 const kwh = (k) => k.toFixed(k >= 100 ? 0 : 1) + " kWh";
 const dayKey = (d) => d.toLocaleDateString("en-CA");
 const dayLabel = (key) => new Date(key + "T12:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+const kwhFmt = (k) => k.toFixed(k >= 100 ? 0 : 1) + " kWh";
 const isPeak = (d) => d.getHours() >= PEAK_START && d.getHours() < PEAK_END;
 const svgEl = (tag, attrs) => {
   const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
@@ -1884,7 +1909,7 @@ function renderAll() {
   renderShift();
   renderWorst(prep);
   renderHeatmap(prep);
-  renderComparison(data, prep); renderBands(prep, getBands());
+  renderComparison(data, prep); renderBands(prep, getBands()); renderDay();
 
   const s = state.status;
   $("#settingsLine").textContent = "OctoDave " + s.version + " (from " + s.code_from + ") · Key " + (s.key_hint || "saved") + " in " + s.key_store + " · MPAN " + s.mpan +
@@ -1921,16 +1946,22 @@ function renderDaily(prep) {
     const x = L + i * slot + (slot - bw) / 2;
     const rest = g.cost - g.peakCost;
     const op = g.est ? 0.5 : 1;
-    const r1 = svgEl("rect", { x, width: bw, y: y(rest), height: Math.max(0, y(0) - y(rest)), fill: "var(--off)", "fill-opacity": op, rx: 1.5 });
-    const r2 = svgEl("rect", { x, width: bw, y: y(g.cost), height: Math.max(0, y(rest) - y(g.cost)), fill: "var(--peak)", "fill-opacity": op, rx: 1.5 });
-    const tip = svgEl("title", {}); tip.textContent = dayLabel(g.day) + ": " + pounds(g.cost) + " (" + pounds(g.peakCost) + " at 4–7pm)" + (g.day === dayKey(new Date()) ? ", so far today" : "") + (g.est ? ", includes Home Mini estimates" : "");
-    r2.appendChild(tip); r1.appendChild(tip.cloneNode(true));
-    svg.appendChild(r1); svg.appendChild(r2);
+    const grp = svgEl("g", { "data-i": i, style: "cursor:pointer" });
+    grp.appendChild(svgEl("rect", { x: L + i * slot, width: slot, y: T, height: H - T - B, fill: "transparent" }));
+    grp.appendChild(svgEl("rect", { x, width: bw, y: y(rest), height: Math.max(0, y(0) - y(rest)), fill: "var(--off)", "fill-opacity": op, rx: 1.5 }));
+    grp.appendChild(svgEl("rect", { x, width: bw, y: y(g.cost), height: Math.max(0, y(rest) - y(g.cost)), fill: "var(--peak)", "fill-opacity": op, rx: 1.5 }));
+    const tip = svgEl("title", {}); tip.textContent = dayLabel(g.day) + ": " + pounds(g.cost) + " (" + pounds(g.peakCost) + " at 4–7pm)" + (g.day === dayKey(new Date()) ? ", so far today" : "") + (g.est ? ", includes Home Mini estimates" : "") + ". Click to open the day.";
+    grp.appendChild(tip);
+    svg.appendChild(grp);
     if (i % labelEvery === 0) {
       const t = svgEl("text", { x: x + bw / 2, y: H - 8, "text-anchor": "middle" });
       t.textContent = new Date(g.day + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" });
       svg.appendChild(t);
     }
+  });
+  svg.addEventListener("click", (ev) => {
+    const grp = ev.target.closest("g[data-i]");
+    if (grp) openDay(prep.days[Number(grp.dataset.i)].day);
   });
   $("#dailyChart").replaceChildren(svg);
 }
@@ -2339,7 +2370,7 @@ wireBands(getBands, async (low, high) => {
   state.status = await api("/api/prefs", { method: "POST", body: JSON.stringify({ band_low_p: low, band_high_p: high }) });
 }, () => {
   if (state.data) renderBands(prepare(state.data), getBands());
-  renderAhead(); renderLivePill();
+  renderAhead(); renderLivePill(); renderDay();
 });
 
 // ---------- price bands (same in both apps) ----------
@@ -2643,6 +2674,138 @@ function renderLivePill() {
   $("#liveBand").replaceChildren(pill);
 }
 setInterval(() => { if (!document.hidden) renderPriceGlance(); }, 60000);
+
+// ---------- day drill-down (same in both apps) ----------
+// Opened by clicking or tapping a day in the 4–7pm chart or the price bands chart. Shows that day's
+// half-hours coloured by band, with the unit price as a line, and the day's totals.
+state.dayOpen = null;
+state.dayReadoutHint = "Click a half-hour for its figures.";
+
+function openDay(key) {
+  state.dayOpen = key;
+  const p = $("#dayPanel");
+  show(p, true); // before drawing, so the chart can measure its width
+  renderDay();
+  // Scroll so the panel's top sits just under the iPhone's sticky header (the Mac has none).
+  const hdr = document.querySelector("header.top");
+  const off = hdr && getComputedStyle(hdr).position === "sticky" ? hdr.getBoundingClientRect().height : 0;
+  window.scrollTo({ top: p.getBoundingClientRect().top + window.scrollY - off - 8, behavior: "smooth" });
+}
+function closeDay() { state.dayOpen = null; show($("#dayPanel"), false); }
+
+function renderDay() {
+  const prep = state.prep, key = state.dayOpen;
+  if (!key) return;
+  const idx = prep ? prep.days.findIndex((g) => g.day === key) : -1;
+  if (idx < 0) { closeDay(); return; }
+  const g = prep.days[idx], b = getBands();
+  const isToday = key === dayKey(new Date());
+  $("#dayTitle").textContent = new Date(key + "T12:00:00").toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }) + (isToday ? " (so far)" : "");
+  $("#dayPrev").disabled = idx === 0;
+  $("#dayNext").disabled = idx === prep.days.length - 1;
+
+  const estRows = g.rows.filter((r) => r.est);
+  const note = $("#dayEst");
+  if (estRows.length) {
+    note.textContent = estRows.length === g.rows.length
+      ? "All of this day is from your Home Mini. These are estimates until Octopus's settled readings arrive, usually a day later."
+      : "From " + hhmm(estRows[0].d) + " this day is from your Home Mini, as an estimate until Octopus's settled readings arrive.";
+    show(note, true);
+  } else show(note, false);
+
+  // Totals.
+  const priced = g.rows.filter((r) => r.p != null);
+  const pricedK = priced.reduce((a, r) => a + r.k, 0);
+  const standing = (state.data && state.data.standing_by_day[key]) || 0;
+  const tiles = $("#dayTiles"); tiles.replaceChildren();
+  const tile = (label, value, sub) => {
+    const t = document.createElement("div"); t.className = "billtile";
+    t.innerHTML = '<span class="label"></span><span class="value"></span><span class="sub"></span>';
+    t.children[0].textContent = label; t.children[1].textContent = value; t.children[2].textContent = sub || "";
+    tiles.appendChild(t);
+  };
+  tile("Used", kwhFmt(g.kwh), g.rows.length + " half-hour" + (g.rows.length === 1 ? "" : "s"));
+  tile("Cost", pounds(g.cost + standing), pounds(g.cost) + " energy + " + pence(standing) + " standing");
+  tile("Average price", pricedK > 0 ? pence(g.cost / pricedK) : "–", "per kWh, energy only");
+  tile("4–7pm", kwhFmt(g.peakKwh), pounds(g.peakCost) + (g.kwh > 0 ? ", " + Math.round((g.peakKwh / g.kwh) * 100) + "% of the day's use" : ""));
+
+  // Band mix.
+  const mix = { low: 0, mid: 0, high: 0 };
+  for (const r of priced) mix[bandOf(r.p, b)] += r.k;
+  const bar = $("#dayBandBar"); bar.replaceChildren();
+  const pct = (v) => (pricedK > 0 ? Math.round((v / pricedK) * 100) : 0);
+  bar.setAttribute("role", "img");
+  bar.setAttribute("aria-label", BAND_ORDER.map((k) => BAND_LABEL[k] + " " + pct(mix[k]) + "%").join(", "));
+  for (const k of BAND_ORDER) {
+    if (!mix[k]) continue;
+    const s = document.createElement("span"); s.style.width = ((mix[k] / pricedK) * 100).toFixed(2) + "%"; s.style.background = BAND_COLOUR[k];
+    bar.appendChild(s);
+  }
+  $("#dayBandText").textContent = pricedK > 0
+    ? BAND_ORDER.map((k) => BAND_LABEL[k] + " " + mix[k].toFixed(1) + " kWh (" + pct(mix[k]) + "%)").join(" · ")
+    : "No prices for this day.";
+
+  // Half-hourly chart: kWh bars by band, unit price as a line on the right-hand scale.
+  const box = $("#dayChart");
+  const L = 40, R = 40, T = 10, B = 24, H = 200;
+  const W = Math.max(320, Math.floor(box.clientWidth || 600));
+  const maxK = Math.max(...g.rows.map((r) => r.k), 0.2);
+  const kStep = niceMax(maxK / 4), kMax = kStep * 4;
+  const ps = priced.map((r) => r.p);
+  const pLo = Math.min(0, ...ps), pHi = Math.max(10, ...ps);
+  const pStep = niceMax((pHi - pLo) / 4), pMin = Math.floor(pLo / pStep) * pStep, pMax = pMin + pStep * Math.max(4, Math.ceil((pHi - pMin) / pStep));
+  const slotW = (W - L - R) / 48, bw = Math.max(2, slotW * 0.74);
+  const x = (s) => L + s * slotW;
+  const yk = (v) => T + (H - T - B) * (1 - v / kMax);
+  const yp = (v) => T + (H - T - B) * (1 - (v - pMin) / (pMax - pMin));
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": "Half-hourly use and price for " + dayLabel(key) });
+  svg.appendChild(svgEl("rect", { x: x(32), width: slotW * 6, y: T, height: H - T - B, fill: "var(--peak)", "fill-opacity": 0.07 }));
+  for (let i = 0; i <= 4; i++) {
+    const v = kStep * i;
+    svg.appendChild(svgEl("line", { x1: L, x2: W - R, y1: yk(v), y2: yk(v), stroke: "var(--line)", "stroke-width": 1 }));
+    const t = svgEl("text", { x: L - 5, y: yk(v) + 4, "text-anchor": "end" }); t.textContent = (Number.isInteger(v) ? v : v.toFixed(v < 1 ? 2 : 1)) + ""; svg.appendChild(t);
+  }
+  for (let v = pMin; v <= pMax + 1e-9; v += pStep) {
+    const t = svgEl("text", { x: W - R + 5, y: yp(v) + 4, "text-anchor": "start" }); t.textContent = Math.round(v) + "p"; svg.appendChild(t);
+  }
+  const unitL = svgEl("text", { x: L - 5, y: H - 7, "text-anchor": "end" }); unitL.textContent = "kWh"; svg.appendChild(unitL);
+  for (const h of [0, 6, 12, 18]) {
+    const t = svgEl("text", { x: x(h * 2), y: H - 7, "text-anchor": "start" }); t.textContent = String(h).padStart(2, "0") + ":00"; svg.appendChild(t);
+  }
+  g.rows.forEach((r, i) => {
+    const grp = svgEl("g", { "data-i": i, style: "cursor:pointer" });
+    grp.appendChild(svgEl("rect", { x: x(r.slot), width: slotW, y: T, height: H - T - B, fill: "transparent" }));
+    grp.appendChild(svgEl("rect", { x: x(r.slot) + (slotW - bw) / 2, width: bw, y: yk(r.k), height: Math.max(0, yk(0) - yk(r.k)), rx: 1,
+      fill: r.p == null ? "var(--muted)" : BAND_COLOUR[bandOf(r.p, b)], "fill-opacity": r.est ? 0.5 : 1 }));
+    const tip = svgEl("title", {}); tip.textContent = dayHalfText(r, b); grp.appendChild(tip);
+    svg.appendChild(grp);
+  });
+  // Price line, stepped so each half-hour's price is flat across its slot.
+  const pts = [];
+  for (const r of priced) pts.push(x(r.slot).toFixed(1) + "," + yp(r.p).toFixed(1), x(r.slot + 1).toFixed(1) + "," + yp(r.p).toFixed(1));
+  if (pts.length) svg.appendChild(svgEl("polyline", { points: pts.join(" "), fill: "none", stroke: "var(--ink)", "stroke-opacity": 0.55, "stroke-width": 1.5, "stroke-linejoin": "round" }));
+  if (pMin < 0) svg.appendChild(svgEl("line", { x1: L, x2: W - R, y1: yp(0), y2: yp(0), stroke: "var(--ink)", "stroke-opacity": 0.3, "stroke-dasharray": "3 3" }));
+  svg.addEventListener("click", (ev) => {
+    const grp = ev.target.closest("g[data-i]");
+    if (grp) $("#dayReadout").textContent = dayHalfText(g.rows[Number(grp.dataset.i)], b);
+  });
+  box.replaceChildren(svg);
+  $("#dayReadout").textContent = state.dayReadoutHint;
+}
+
+function dayHalfText(r, b) {
+  const end = new Date(r.d.getTime() + 1800000);
+  return hhmm(r.d) + "–" + hhmm(end) + ": " + r.k.toFixed(2) + " kWh" +
+    (r.p == null ? ", price not published" : " at " + pence(r.p) + " = " + pence(r.k * r.p) + " (" + BAND_LABEL[bandOf(r.p, b)] + ")") +
+    (r.est ? ". Home Mini estimate." : "");
+}
+
+$("#dayClose").addEventListener("click", closeDay);
+$("#dayPrev").addEventListener("click", () => { const i = state.prep.days.findIndex((g) => g.day === state.dayOpen); if (i > 0) { state.dayOpen = state.prep.days[i - 1].day; renderDay(); } });
+$("#dayNext").addEventListener("click", () => { const i = state.prep.days.findIndex((g) => g.day === state.dayOpen); if (i >= 0 && i < state.prep.days.length - 1) { state.dayOpen = state.prep.days[i + 1].day; renderDay(); } });
+
+let dayResize = null;
+window.addEventListener("resize", () => { clearTimeout(dayResize); dayResize = setTimeout(() => { if (state.dayOpen) renderDay(); }, 200); });
 
 // ---------- start ----------
 function startDashboard(fresh) {
