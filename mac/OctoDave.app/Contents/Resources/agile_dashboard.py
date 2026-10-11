@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "OctoDave"
-VERSION = "1.21"
+VERSION = "1.22"
 
 # Octopus documents api.octopus.energy as the API host. The account page's own
 # examples use api.oegb-kraken.energy, so that is kept as a fallback if the
@@ -1606,7 +1606,7 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
 .btn:disabled { opacity: 0.45; cursor: default; }
 #dayTiles { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 @media (max-width: 560px) { #dayTiles { grid-template-columns: 1fr 1fr; } }
-#insTiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+#insTiles { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
 @media (max-width: 560px) { #insTiles { grid-template-columns: 1fr; } }
 .bc-facts { margin-bottom: 4px; }
 .bc-facts .value { font-size: 1.05rem; }
@@ -1864,7 +1864,7 @@ details.workings dt { color: var(--muted); } details.workings dd { margin: 0; fo
       </div>
       <div class="billtiles" id="insTiles"></div>
       <p class="notice" id="insNote" hidden></p>
-      <div class="legend"><span><i style="background:var(--off);opacity:.6"></i>Average use each half-hour</span><span><i style="background:var(--accent)"></i>Busiest hour</span><span><i style="background:var(--peak);height:2px;vertical-align:3px"></i>Always-on level</span></div>
+      <div class="legend"><span><i style="background:var(--off);opacity:.6"></i>Average use each half-hour</span><span><i style="background:var(--accent)"></i>Busiest hour</span><span><i style="background:var(--peak);height:2px;vertical-align:3px"></i>Never-off level</span><span><i style="background:var(--peak);opacity:.7;height:1px;vertical-align:3px"></i>Plus cycling, on average</span></div>
       <div class="chart" id="insChart"></div>
       <p class="readout muted" id="insReadout">Click a bar for that half-hour's average.</p>
       <details class="workings"><summary>How these are worked out</summary><dl id="insWorkings"></dl></details>
@@ -3207,7 +3207,31 @@ function computeInsights(prep) {
     win: best, winShare: totalK > 0 ? bestK / totalK : 0,
     winP: wPk > 0 ? (w[0].c + w[1].c) / wPk : null,
     prof: prof.map((s) => ({ k: s.n ? s.k / s.n : 0, p: s.pk > 0 ? s.c / s.pk : null })),
+    split: splitBaseLoad(rows),
   };
+}
+
+// Split the always-on use into "never off" and "cycling" (a fridge or freezer, usually). Overnight
+// half-hours (01:00-04:00, nobody using anything) fall into two groups when something cycles on and off:
+// the lower group is what never switches off; the overnight average above it is the cycling load.
+function splitBaseLoad(rows) {
+  const ws = rows.filter((r) => r.slot >= 2 && r.slot < 8).map((r) => r.k * 2000).filter((w) => w > 0 && w < 400).sort((a, b) => a - b);
+  if (ws.length < 40) return null;
+  let lo = ws[Math.floor(ws.length * 0.1)], hi = ws[Math.floor(ws.length * 0.9)];
+  let low = [], high = [];
+  for (let it = 0; it < 30; it++) {
+    const cut = (lo + hi) / 2;
+    low = ws.filter((w) => w <= cut); high = ws.filter((w) => w > cut);
+    if (!low.length || !high.length) return null;
+    const nlo = low.reduce((a, w) => a + w, 0) / low.length, nhi = high.reduce((a, w) => a + w, 0) / high.length;
+    if (Math.abs(nlo - lo) < 0.01 && Math.abs(nhi - hi) < 0.01) break;
+    lo = nlo; hi = nhi;
+  }
+  const share = low.length / ws.length;
+  if (hi - lo < 30 || share < 0.08 || share > 0.92) return null;
+  const neverOff = low[Math.floor(low.length / 2)];
+  const mean = ws.reduce((a, w) => a + w, 0) / ws.length;
+  return { neverOff, cycling: Math.max(0, mean - neverOff), overnightMean: mean, step: hi - lo, n: ws.length, offShare: share };
 }
 
 const slotTime = (s) => String(Math.floor(s / 2) % 24).padStart(2, "0") + ":" + (s % 2 ? "30" : "00");
@@ -3229,9 +3253,17 @@ function renderInsights(prep) {
     t.children[0].textContent = label; t.children[1].textContent = value; t.children[2].textContent = sub;
     tiles.appendChild(t);
   };
-  tile("Always on", "about " + Math.round(ins.baseW) + " W",
-    ins.baseDayK.toFixed(1) + " kWh a day, " + Math.round(ins.baseShare * 100) + "% of your use" +
-    (ins.baseMonthP != null ? ", about " + pounds(ins.baseMonthP) + " a month" : ""));
+  const yearP = (w) => (ins.flatP == null ? "" : ", about " + pounds(w * 8.76 * ins.flatP) + " a year");
+  if (ins.split) {
+    tile("Never off", "about " + Math.round(ins.split.neverOff) + " W",
+      "Standby, network, anything always plugged in" + yearP(ins.split.neverOff));
+    tile("Cycling", "about " + Math.round(ins.split.cycling) + " W on average",
+      "Switches on and off by itself, most likely a fridge or freezer" + yearP(ins.split.cycling));
+  } else {
+    tile("Always on", "about " + Math.round(ins.baseW) + " W",
+      ins.baseDayK.toFixed(1) + " kWh a day, " + Math.round(ins.baseShare * 100) + "% of your use" +
+      (ins.baseMonthP != null ? ", about " + pounds(ins.baseMonthP) + " a month" : ""));
+  }
   const winEnd = ins.win + 2;
   tile("Busiest hour", slotTime(ins.win) + "–" + slotTime(winEnd),
     Math.round(ins.winShare * 100) + "% of your use" +
@@ -3270,7 +3302,12 @@ function renderInsights(prep) {
     const tip = svgEl("title", {}); tip.textContent = insSlotText(i, s); grp.appendChild(tip);
     svg.appendChild(grp);
   });
-  svg.appendChild(svgEl("line", { x1: L, x2: W - R, y1: y(ins.baseK), y2: y(ins.baseK), stroke: "var(--peak)", "stroke-width": 1.5, "stroke-dasharray": "5 4" }));
+  const baseLine = ins.split ? ins.split.neverOff / 2000 : ins.baseK;
+  svg.appendChild(svgEl("line", { x1: L, x2: W - R, y1: y(baseLine), y2: y(baseLine), stroke: "var(--peak)", "stroke-width": 1.5, "stroke-dasharray": "5 4" }));
+  if (ins.split) {
+    const cyc = (ins.split.neverOff + ins.split.cycling) / 2000;
+    svg.appendChild(svgEl("line", { x1: L, x2: W - R, y1: y(cyc), y2: y(cyc), stroke: "var(--peak)", "stroke-width": 1, "stroke-dasharray": "2 4", "stroke-opacity": 0.7 }));
+  }
   svg.addEventListener("click", (ev) => {
     const grp = ev.target.closest("g[data-i]");
     if (grp) { const i = Number(grp.dataset.i); $("#insReadout").textContent = insSlotText(i, ins.prof[i]); }
@@ -3280,6 +3317,9 @@ function renderInsights(prep) {
   const rows = [
     ["Days used", ins.days + " complete days (today is left out until it's over)"],
     ["Always on", "The 10th-percentile half-hour: " + ins.baseK.toFixed(3) + " kWh, × 2 = " + (ins.baseK * 2).toFixed(3) + " kW. Nine in ten half-hours use at least this much."],
+    ...(ins.split ? [["Never off and cycling", "Overnight half-hours (01:00 to 04:00, " + ins.split.n + " of them) fall into two levels about " + Math.round(ins.split.step) + " W apart. " +
+      "The lower level, " + Math.round(ins.split.neverOff) + " W, is what never switches off. Overnight use averages " + Math.round(ins.split.overnightMean) + " W, so something adds about " +
+      Math.round(ins.split.cycling) + " W on average as it switches on and off, which is what a fridge or freezer does. Costs per year use " + pence(ins.flatP) + ", the average half-hourly price."]] : []),
     ["Always-on cost", ins.baseMonthP == null ? "No prices for this period" : ins.baseDayK.toFixed(2) + " kWh a day × 30.4 days × " + pence(ins.flatP) + " (the average of every half-hour's price, since it runs round the clock) = " + pounds(ins.baseMonthP) + " a month (energy only)"],
     ["Busiest hour", "The two neighbouring half-hours with the most use across all the days: " + slotTime(ins.win) + "–" + slotTime(ins.win + 2) + ", " + Math.round(ins.winShare * 100) + "% of " + ins.totalK.toFixed(0) + " kWh"],
   ];
