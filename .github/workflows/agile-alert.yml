@@ -1,0 +1,44 @@
+# Daily Agile price alert: push-notifies (via ntfy) if any half-hour tomorrow
+# is negative or under 5p. Silent otherwise. See alerts/agile_alert.py.
+name: Agile price alert
+
+on:
+  schedule:
+    # UTC. Octopus publishes tomorrow's prices at about 16:00 UK time.
+    # First check 17:35 BST / 16:35 GMT; the second only acts if the first
+    # couldn't (prices late or a fetch failure), and reports if still nothing.
+    - cron: "35 16 * * *"
+    - cron: "35 18 * * *"
+  workflow_dispatch:
+    inputs:
+      threshold:
+        description: "Alert below this many p/kWh (try 100 to force a test alert)"
+        default: "5"
+      for_date:
+        description: "Date to check, YYYY-MM-DD (blank = tomorrow)"
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agile-alert
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check tomorrow's prices
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          THRESHOLD_P: ${{ inputs.threshold || '5' }}
+          FOR_DATE: ${{ inputs.for_date }}
+          FINAL: ${{ github.event.schedule != '35 16 * * *' && '1' || '0' }}
+          TEST: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+        run: python3 alerts/agile_alert.py

@@ -9,6 +9,7 @@ Dave, UK, on Agile Octopus with an Octopus Home Mini. Infosec analyst, so keep s
 - `mac/OctoDave.app/Contents/Resources/agile_dashboard.py`: the whole Mac app. Python 3.8+ standard library only (no pip packages). Contains the server, the Octopus client and the page (the `PAGE` string).
 - `mac/OctoDave.app/Contents/MacOS/OctoDave`: bash launcher. Runs `agile_dashboard.py` from Dave's clone at `~/Code/octodave` when it exists and parses, otherwise the copy in the bundle. Starts the server on port 8765 with `--app` (stops itself an hour after the last sign of an open tab; an open tab reconnects by itself when the app is reopened).
 - `mac/build.sh`: zips the app into `dist/` (git-ignored).
+- `alerts/agile_alert.py` + `.github/workflows/agile-alert.yml`: daily price alert run by GitHub Actions, pushed through ntfy (topic in the `NTFY_TOPIC` repo secret). Standard library only. Replaces the Claude scheduled task, which couldn't fetch unattended.
 - `docs/index.html`: the whole iPhone app, a browser port of the Mac app. Served by GitHub Pages from `/docs` on `main`.
 
 ## Rules
