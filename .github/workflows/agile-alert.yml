@@ -20,6 +20,9 @@ on:
 
 permissions:
   contents: read
+  # Lets the job re-enable itself (see "Keep the schedule alive"). Limited
+  # to this repo's workflows; it can't touch code, secrets or settings.
+  actions: write
 
 concurrency:
   group: agile-alert
@@ -30,6 +33,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # GitHub pauses scheduled workflows in a public repo after 60 days
+      # without commits. Re-enabling the workflow on every run resets that
+      # clock. Never fails the job.
+      - name: Keep the schedule alive
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow enable agile-alert.yml --repo "$GITHUB_REPOSITORY"
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:

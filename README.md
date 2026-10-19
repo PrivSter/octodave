@@ -45,7 +45,7 @@ Updates: push to `main`; the phone picks up the new page next time it's opened (
 
 ## Price alert (phone)
 
-`.github/workflows/agile-alert.yml` runs `alerts/agile_alert.py` on GitHub every day at 16:35 and 18:35 UTC. It checks tomorrow's Agile unit rates (public API, no key) and, if any half-hour is negative or under 5p, sends one push notification through [ntfy](https://ntfy.sh) to the topic in the `NTFY_TOPIC` repo secret. It's silent when nothing is cheap. The second run only acts if the first couldn't, and if tomorrow's prices still aren't out, or Octopus can't be reached, it says so. A message already sent for a day (ntfy tag `dYYYYMMDD`) isn't repeated. Run it by hand from the Actions tab with a threshold of 100 to send a test alert.
+`.github/workflows/agile-alert.yml` runs `alerts/agile_alert.py` on GitHub every day at 16:35 and 18:35 UTC. It checks tomorrow's Agile unit rates (public API, no key) and, if any half-hour is negative or under 5p, sends one push notification through [ntfy](https://ntfy.sh) to the topic in the `NTFY_TOPIC` repo secret. It's silent when nothing is cheap. The second run only acts if the first couldn't, and if tomorrow's prices still aren't out, or Octopus can't be reached, it says so. A message already sent for a day (ntfy tag `dYYYYMMDD`) isn't repeated. Each run also re-enables the workflow, so GitHub's 60-day pause for repos without commits shouldn't kick in. Run it by hand from the Actions tab with a threshold of 100 to send a test alert.
 
 The topic name works like a password: anyone who knows it can read and send to it. Keep it only in the secret, never in the repo.
 
