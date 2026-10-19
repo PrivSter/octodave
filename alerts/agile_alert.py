@@ -133,7 +133,8 @@ def main():
     day = (dt.date.fromisoformat(os.environ["FOR_DATE"]) if os.environ.get("FOR_DATE")
            else dt.datetime.now(UK).date() + dt.timedelta(days=1))
     label = day.strftime("%a %-d %b")
-    tag = "d" + day.strftime("%Y%m%d")
+    # Tests get their own tag so they never stop the real alert for that day.
+    tag = ("test" if TEST else "d") + day.strftime("%Y%m%d")
 
     if already_sent(tag):
         print(f"Already notified for {day}; nothing to do.")
